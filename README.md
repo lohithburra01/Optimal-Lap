@@ -23,7 +23,9 @@
 
 3) Calendar of all F1 Events
   - ID
+  - Year
   - Round Number
+  - Gp Name
   - Track ID
   - Event Name (Practice 1, Quali, Etc)
   - Start Time
