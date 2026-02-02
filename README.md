@@ -4,12 +4,12 @@
 
 ### Databases
 1) Tracks - 1 Excel sheet tracking all track versions
-      ID
-      Track Name
-      Track Version Number
-      Track Version Start Date
-      Track Version End Date
-      Path to FBX file
+      - ID
+      - Track Name
+      - Track Version Number
+      - Track Version Start Date
+      - Track Version End Date
+      - Path to FBX file
 
 2) Car Models w/ Livery - 1 Sheet that tracks all cars of each year versioned by their livery
   - ID
