@@ -1,0 +1,24 @@
+schema_version = "1.0.0"
+
+
+id = "launch_control_auto_car_rig"
+version = "1.9.1"
+name = "Launch Control (Lap from JSON)"
+tagline = "Rig, Animate and Calculate Physics for your Vehicles! + Lap from JSON."
+type = "add-on"
+
+maintainer = "Daniel Vesterbaek, Gabriela Rodriguez, Blastframe"
+website = "https://launch-control.org"
+tags = ["Rigging", "Animation", "Physics"]
+
+blender_version_min = "4.2.0"
+
+# License conforming to https://spdx.org/licenses/ (use "SPDX: prefix)
+# https://docs.blender.org/manual/en/dev/advanced/extensions/licenses.html
+license = [
+  "SPDX:GPL-3.0-or-later",
+]
+
+copyright = [
+  "2022-2025 Daniel Vesterbaek",
+]
