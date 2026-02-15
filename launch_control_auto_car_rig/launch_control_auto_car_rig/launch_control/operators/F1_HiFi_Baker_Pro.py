@@ -181,6 +181,343 @@ def calculate_hifi_delta(ref, tgt):
     return ref['dist'], final_delta, metrics
 
 # ==============================================================================
+# 5. TELEMETRY EXPORT (CSV)
+# ==============================================================================
+def generate_telemetry_csv(year, gp, session_type, drivers, settings):
+    print(f"Generating Telemetry CSVs for {drivers}...")
+    fps = settings.get('fps', 24)
+    output_dir = settings.get('output_dir', os.path.join(os.path.expanduser("~"), "Downloads"))
+    
+    try:
+        session = fastf1.get_session(year, gp, session_type)
+        session.load(telemetry=True, laps=True, weather=False, messages=False)
+    except Exception as e:
+        print(f"CSV Export Error: {e}")
+        return
+
+    ref_driver = drivers[0]
+
+    def get_rich_telemetry(drv):
+        laps = session.laps.pick_drivers(drv)
+        if laps.empty: return None
+        lap = laps.pick_fastest()
+        try:
+            tel = lap.get_telemetry()
+            # Drop NaN rows only for critical path channels to ensure valid interpolation
+            tel = tel.dropna(subset=['Distance', 'Speed', 'Time'])
+            tel = tel.drop_duplicates(subset=['Distance'])
+            return {
+                'dist': tel['Distance'].values,
+                'time': tel['Time'].dt.total_seconds().values,
+                'speed': tel['Speed'].values,
+                'throttle': tel['Throttle'].values,
+                'brake': tel['Brake'].values,
+                'gear': tel['nGear'].values,
+                'rpm': tel['RPM'].values,
+                'drs': tel['DRS'].values,
+                'lap_time': lap['LapTime'].total_seconds(),
+                'driver': drv
+            }
+        except: return None
+
+    ref_data = get_rich_telemetry(ref_driver)
+    if not ref_data: return
+
+    # Normalize Ref Time
+    ref_data['time'] -= ref_data['time'][0]
+    
+    # --- PREPARE DELTA CSV MASTER GRID ---
+    # We use Reference Driver's Lap Time to define the comparison frame grid
+    total_frames = int(np.ceil(ref_data['lap_time'] * fps))
+    frame_indices = np.arange(total_frames)
+    frame_times = frame_indices / fps
+    
+    f_ref_dist_at_time = interp1d(ref_data['time'], ref_data['dist'], fill_value="extrapolate")
+    ref_dists_at_frames = f_ref_dist_at_time(frame_times)
+    
+    delta_data = {
+        'frame': frame_indices,
+        'distance': np.round(ref_dists_at_frames, 3),
+        f'{ref_driver}_delta': np.zeros(total_frames)
+    }
+    
+    for drv in drivers:
+        drv_data = get_rich_telemetry(drv)
+        if not drv_data: continue
+        
+        # 1. Calculate Alignment (Delta)
+        if drv == ref_driver:
+            dist_vals = ref_data['dist']
+            final_delta_vals = np.zeros_like(dist_vals)
+            f_time_at_dist = interp1d(ref_data['dist'], ref_data['time'], fill_value="extrapolate")
+        else:
+            # Must reuse the same HiFi alignment logic
+            dist_vals, final_delta_vals, _ = calculate_hifi_delta(ref_data, drv_data)
+            
+            if dist_vals is None: continue
+            
+            ref_time_interp = interp1d(ref_data['dist'], ref_data['time'], fill_value="extrapolate")
+            delta_interp = interp1d(dist_vals, final_delta_vals, fill_value="extrapolate")
+            f_time_at_dist = lambda d: ref_time_interp(d) + delta_interp(d)
+            
+            # Populate Delta CSV Column
+            # Align delta to Ref Frames
+            delta_at_frames = delta_interp(ref_dists_at_frames)
+            delta_data[f'{drv}_delta'] = np.round(delta_at_frames, 4)
+
+        # 2. Generate Individual Telemetry CSV
+        # We need frames for THIS driver's simulated run (warped)
+        # Create dense distance grid to invert time mapping
+        sample_dists = np.linspace(0, ref_data['dist'].max(), 5000)
+        sample_times = f_time_at_dist(sample_dists)
+        
+        # Invert to get Dist(Time) for the driver's warp
+        # Handle non-strict monotonicity if small glitches occur (sort)
+        if np.any(np.diff(sample_times) < 0):
+             sorted_indices = np.argsort(sample_times)
+             sample_times = sample_times[sorted_indices]
+             sample_dists = sample_dists[sorted_indices]
+             
+        f_dist_at_time = interp1d(sample_times, sample_dists, fill_value="extrapolate", bounds_error=False)
+        
+        # Driver Frame Grid
+        drv_duration = sample_times[-1]
+        drv_total_frames = int(np.ceil(drv_duration * fps))
+        drv_frames = np.arange(drv_total_frames)
+        drv_frame_times = drv_frames / fps
+        
+        # Corresponding Distances on Track
+        drv_dists = f_dist_at_time(drv_frame_times)
+        
+        # Sample Raw Telemetry at these distances
+        f_spd = interp1d(drv_data['dist'], drv_data['speed'], fill_value="extrapolate")
+        f_thr = interp1d(drv_data['dist'], drv_data['throttle'], fill_value="extrapolate")
+        f_brk = interp1d(drv_data['dist'], drv_data['brake'], fill_value="extrapolate")
+        f_rpm = interp1d(drv_data['dist'], drv_data['rpm'], fill_value="extrapolate")
+        f_gear = interp1d(drv_data['dist'], drv_data['gear'], kind='nearest', fill_value="extrapolate")
+        f_drs = interp1d(drv_data['dist'], drv_data['drs'], kind='nearest', fill_value="extrapolate")
+        
+        raw_drs = f_drs(drv_dists)
+        # Map DRS: 0-7->0, 8-9->1 (Detected), 10+->2 (Active)
+        ers_deploy = np.zeros_like(raw_drs, dtype=int)
+        ers_deploy[raw_drs >= 8] = 1
+        ers_deploy[raw_drs >= 10] = 2
+        
+        df_out = pd.DataFrame({
+            'frame': drv_frames,
+            'distance': np.round(drv_dists, 2),
+            'speed': np.round(f_spd(drv_dists), 1),
+            'throttle': np.round(f_thr(drv_dists), 1),
+            'brake': np.round(f_brk(drv_dists), 1),
+            'gear': np.round(f_gear(drv_dists)).astype(int),
+            'rpm': np.round(f_rpm(drv_dists)).astype(int),
+            'ers_deploy': ers_deploy
+        })
+        
+        fname = os.path.join(output_dir, f"{drv}_telemetry.csv")
+        df_out.to_csv(fname, index=False)
+        
+    # Save Delta CSV
+    pd.DataFrame(delta_data).to_csv(os.path.join(output_dir, "delta_comparison.csv"), index=False)
+    print("CSV Export Complete.")
+
+
+# ==============================================================================
+# 6. MINIMAP RENDERER
+# ==============================================================================
+# ==============================================================================
+# 6. MINIMAP RENDERER
+# ==============================================================================
+def generate_minimap_frames(session, drivers, output_dir, ref_driver, year, event):
+    
+    TEAM_COLORS = {
+        'Red Bull Racing': '#3671C6',
+        'McLaren': '#FF8000',
+        'Ferrari': '#F91536',
+        'Mercedes': '#6CD3BF',
+        'Aston Martin': '#358C75',
+        'Alpine': '#2293D1',
+        'Williams': '#64C4FF',
+        'RB': '#6692FF',
+        'Racing Bulls': '#6692FF',
+        'Haas F1 Team': '#B6BABD',
+        'Kick Sauber': '#C92D4B',
+        'Alfa Romeo': '#C92D4B',
+        'AlphaTauri': '#6692FF',
+        'Toro Rosso': '#6692FF',
+        'Renault': '#FFF500',
+        'Racing Point': '#F596C8',
+        'Force India': '#F596C8',
+        'Sauber': '#C92D4B',
+        'Audi': '#C0003C',
+        'Cadillac': '#D5CECD',
+    }
+
+    print(f"Generating Minimap Frames...")
+    
+    # Load Driver Database
+    db_path = os.path.join(os.path.dirname(output_dir), 'database', 'drivers_by_race.json')
+    race_drivers_db = []
+    
+    if os.path.exists(db_path):
+        try:
+            with open(db_path, 'r') as f:
+                full_db = json.load(f)
+                year_str = str(year)
+                # Try to find the event (handling case sensitivity or partial match could be added, but strict for now)
+                # The user prompt implies structure: { "YEAR": { "Race Name": [...] } }
+                if year_str in full_db:
+                    # We need to match 'event' to the key in json. FastF1 event name might differ slightly.
+                    # Best effort: Look for exact match first, then caseless.
+                    # Using the passed 'event' (gp) string.
+                    
+                    # Assuming strict match logic for now based on instruction "Find the entry matching year and event name"
+                    if event in full_db[year_str]:
+                        race_drivers_db = full_db[year_str][event]
+                    else:
+                        print(f"Event '{event}' not found in database for {year_str}.")
+        except Exception as e:
+            print(f"Database Load Error: {e}")
+    else:
+        print(f"Database not found at {db_path}")
+
+    def get_team_color(drv_code):
+        # Find driver in the loaded race list
+        for entry in race_drivers_db:
+            if entry.get('code') == drv_code:
+                team = entry.get('team_raw')
+                return TEAM_COLORS.get(team, '#FFFFFF')
+        return '#FFFFFF'
+
+    # 1. Setup Output Directory
+    frames_dir = os.path.join(output_dir, "minimap_frames")
+    if not os.path.exists(frames_dir):
+        os.makedirs(frames_dir)
+        
+    # 2. Build Track Spline (from Ref Driver's Fastest Lap)
+    try:
+        lap = session.laps.pick_driver(ref_driver).pick_fastest()
+        tel = lap.get_telemetry().dropna(subset=['X', 'Y', 'Distance'])
+        tel = tel.drop_duplicates(subset=['Distance'])
+        
+        x = tel['X'].values
+        y = tel['Y'].values
+        dist = tel['Distance'].values
+        
+        # Normalize to 0-1 for splprep
+        dist_norm = dist / dist.max()
+        
+        # Create Spline (smooth factor s=0 forces through points if needed, but small s is better)
+        # We use a small amount of smoothing to handle GPS jitter
+        tck, u = splprep([x, y], u=dist_norm, s=10000, per=0) 
+        
+        # Function to get (x,y) from distance
+        def get_pos_from_dist(d):
+            # Clamp d to max distance
+            d_clamped = np.clip(d, 0, dist.max())
+            u_val = d_clamped / dist.max()
+            return splev(u_val, tck)
+
+        # Pre-calculate track line for plotting
+        u_track = np.linspace(0, 1, 1000)
+        track_x, track_y = splev(u_track, tck)
+        
+    except Exception as e:
+        print(f"Minimap Spline Error: {e}")
+        return
+
+    # 3. Load Baked CSV Data
+    driver_data = {}
+    max_frames = 0
+    
+    for drv in drivers:
+        csv_path = os.path.join(output_dir, f"{drv}_telemetry.csv")
+        if not os.path.exists(csv_path):
+            print(f"Missing CSV for {drv}")
+            continue
+            
+        df = pd.read_csv(csv_path)
+        driver_data[drv] = {
+            'dist': df['distance'].values,
+            'color': get_team_color(drv),
+            'label': drv
+        }
+        # Ref driver defines the frame count usually, but take max to be safe
+        if drv == ref_driver:
+            max_frames = len(df)
+    
+    if max_frames == 0:
+        print("No valid telemetry data found.")
+        return
+
+    # 4. Render Frames
+    # Use Agg backend for headless rendering
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    
+    # Setup Figure (500x300, Transparent)
+    dpi = 100
+    fig = plt.figure(figsize=(500/dpi, 300/dpi), dpi=dpi)
+    # Make background transparent
+    fig.patch.set_alpha(0.0)
+    
+    ax = fig.add_axes([0, 0, 1, 1]) # Full figure
+    ax.axis('off')
+    ax.set_aspect('equal')
+    
+    # Plot Track Outline
+    ax.plot(track_x, track_y, color='white', linewidth=2, alpha=0.6)
+    
+    # Initial Dots
+    scatters = {}
+    texts = {}
+    
+    for drv in driver_data:
+        color = driver_data[drv]['color']
+        # Scatter dot
+        sc = ax.scatter([], [], color=color, s=100, zorder=10, edgecolors='white', linewidth=1)
+        scatters[drv] = sc
+        # Text Label
+        txt = ax.text(0, 0, drv, color='white', fontsize=10, fontweight='bold', ha='left', va='center')
+        texts[drv] = txt
+
+    print(f"Rendering {max_frames} frames...")
+    
+    # Frame Loop
+    for i in range(max_frames):
+        for drv in driver_data:
+            # Get distance for this frame
+            dists = driver_data[drv]['dist']
+            if i < len(dists):
+                d = dists[i]
+                x_pos, y_pos = get_pos_from_dist(d)
+                
+                # Update Scatter
+                scatters[drv].set_offsets([[x_pos, y_pos]])
+                
+                # Update Text (offset slightly)
+                texts[drv].set_position((x_pos + 400, y_pos)) # Offset in world units (approx meters)
+                # Ensure visible
+                scatters[drv].set_visible(True)
+                texts[drv].set_visible(True)
+            else:
+                # Hide if out of data
+                scatters[drv].set_visible(False)
+                texts[drv].set_visible(False)
+        
+        # Save Frame
+        frame_name = os.path.join(frames_dir, f"frame_{i:05d}.png")
+        plt.savefig(frame_name, transparent=True, dpi=dpi)
+        
+        if i % 100 == 0:
+            print(f"  Frame {i}/{max_frames}", end='\r')
+            
+    print(f"\nMinimap Generation Complete. Saved to {frames_dir}")
+    plt.close(fig)
+
+
+# ==============================================================================
 # 4. MULTI-RAIL GENERATOR (ANALYTICAL DERIVATIVES)
 # ==============================================================================
 def generate_multirail_data(year, gp, session_type, drivers, settings):
@@ -361,6 +698,13 @@ def generate_multirail_data(year, gp, session_type, drivers, settings):
         
         fname = os.path.join(output_dir, f"{d}_hifi_path.json")
         with open(fname, 'w') as f: json.dump(json_data, f, indent=2)
+
+    
+    # CALL NEW CSV GENERATOR
+    generate_telemetry_csv(year, gp, session_type, drivers, settings)
+
+    # CALL MINIMAP GENERATOR
+    generate_minimap_frames(session, drivers, output_dir, ref_driver, year, gp)
 
     return f"Saved to {output_dir}", results_map, ref_data['lap_time']
 
