@@ -1,0 +1,164 @@
+================================================================================
+
+PROJECT SPECIFICATION: F1 RACE REPLAY STUDIO (AUTOMATED BLENDER PIPELINE)
+
+EXECUTIVE SUMMARY
+
+I am building a comprehensive "One-Button" F1 visualization pipeline in Blender. This tool acts as a "Master Controller" that orchestrates data fetching, asset management, and sequence automation.
+
+CORE OBJECTIVE: Create a scene where I can compare up to 4 different laps (from the same or different years/drivers) on a single track model with minimal human intervention.
+
+CRITICAL DIRECTIVE: I already have the mathematical calculation engine (F1_HiFi_Baker_Pro.py). Do NOT rebuild its core math. However, we are essentially transforming and heavily modifying the animation engine (Launch Control) to serve as the base for this new addon. Your job is to build the new UI, the JSON Database manager, and the Pipeline logic, heavily adapting Launch Control in the process.
+
+PROVIDED ASSETS (THE "LEGO BLOCKS")
+
+I am providing you with two existing components. Here is how you must treat them:
+
+LEGO 1: F1_HiFi_Baker_Pro.py (The Math & JSON Engine)
+This script contains complex algorithms to align F1 telemetry, unbend tracks, and generate [x, y, z, speed] JSON paths. Treat its main calculation engine as an untouchable black box. You must import this script and call its generation functions, but do NOT alter the mathematical formulas inside it.
+
+LEGO 2: Launch Control Addon (The Animation Base)
+Unlike Lego 1, we are essentially changing this whole addon. We will be completely overhauling its UI and the logic for automatically assigning the generated JSON paths to the cars. We are using its rigging mechanics as a foundation, but you will need to heavily modify and integrate this addon into our new "One-Button" Race Replay Studio workflow.
+
+SYSTEM ARCHITECTURE & FILE NAMING SYNTAX
+
+The addon must rely on a local "Source of Truth" folder structure. It must check for this structure on startup and auto-create the folders/empty JSON files if they are missing.
+
+Here is the exact file system and the STRICT naming syntax the user will use when adding models:
+
+Root Folder: F1_Pipeline_Assets/
+├── database/
+│   ├── tracks.json
+
+│   ├── cars.json
+
+│   └── calendar_cache.json
+
+├── tracks/
+
+│   └── Syntax: [circuit_id]_[layout_name].blend
+
+│   └── Example: bahrain_modern.blend or spa_busstop.blend
+
+├── cars/
+
+│   └── Syntax: [YYYY]/[Team Name]/[Driver_Code].blend
+
+│   └── Example Standard: 2024/Red Bull Racing/VER.blend
+
+│   └── Example Special: 2024/Red Bull Racing/VER_Round22.blend
+
+└── temp_data/
+
+└── (Stores the generated telemetry JSONs. Overwritten on every run.)
+
+DATA ARCHITECTURE (JSON SCHEMAS)
+
+The addon MUST use the local JSON databases to map the user's query to the cleanly named files above.
+
+A. Tracks Database (tracks.json)
+Tracks are versioned by Year Ranges. This maps a circuit query to the correct physical layout for that year.
+
+{
+  "bahrain": {
+    "track_name": "Bahrain International Circuit",
+    "versions": [
+      {
+        "version_id": "v1_modern",
+        "start_year": 2014,
+        "end_year": 2025,
+        "file_path": "tracks/bahrain_modern.blend"
+      }
+    ]
+  }
+}
+
+
+B. Car Models Database (cars.json)
+Cars are mapped hierarchically: Year -> Team -> Driver Code. This perfectly handles different numbers/helmets per driver, and supports Round-specific livery overrides.
+
+{
+  "2024": {
+    "Red Bull Racing": {
+      "VER": {
+        "standard": "cars/2024/Red Bull Racing/VER.blend",
+        "specials": {
+          "22": "cars/2024/Red Bull Racing/VER_Round22.blend"
+        }
+      },
+      "PER": {
+        "standard": "cars/2024/Red Bull Racing/PER.blend",
+        "specials": {
+          "22": "cars/2024/Red Bull Racing/PER_Round22.blend"
+        }
+      }
+    }
+  }
+}
+
+
+THE USER INTERFACE & WORKFLOW
+
+The UI must feature a "Lap Queue" system similar to F1InsightsHub or F1 Tempo. No manual typing is allowed; everything must be dropdown-based. Data is sourced via fastf1 or jolpica-f1 (available from 2018 onwards).
+
+SECTION 1: The Query Engine
+
+Dropdown 1: Year (Select Season).
+
+Dropdown 2: Race (Dynamic list populated based on Selected Year).
+
+Dropdown 3: Event/Session (Practice 1, Quali, Sprint, SQ, Race).
+
+Dropdown 4: Drivers (Multi-Select up to 4 drivers). Must populate based on the Entry List of the selected Session.
+
+Button: [ ADD LAPS ]
+
+SECTION 2: The Lap Queue
+
+Constraint: Maximum 4 laps total in the queue.
+
+Visuals: A list box showing the currently selected laps (e.g., 1. VER | 2024 | Bahrain | Race).
+
+Reference Logic: The FIRST lap added to the queue is the "Reference Lap". Its telemetry defines the "Master Distance" and its year defines which Track Model is loaded. For the next lap selections, the race track cannot be changed, it must be stuck with the first query’s race track.
+
+Cross-Era Function: I must be able to start a new query (e.g., change the Year), select different drivers, and click [ ADD LAPS ] to add them to the existing queue alongside the previous selections. Mix and match different years, same track, same or different events, same or different drivers.
+
+SECTION 3: Execution
+
+Button: [ GENERATE SCENE ]
+
+AUTOMATION PIPELINE (THE BACKEND LOGIC)
+
+When [ GENERATE SCENE ] is clicked, the system performs the following sequential operations completely automatically:
+
+PHASE 1: Telemetry & Math (Using Lego 1)
+
+Iterate through the "Lap Queue".
+
+Do NOT touch or normalize the raw data before feeding it to the math engine. The delta calculation addon (F1_HiFi_Baker_Pro.py) already handles Cross-Era Normalization internally.
+
+Hook into F1_HiFi_Baker_Pro.py: Feed it the query inputs directly to calculate the Hi-Fi Delta Paths.
+
+Output: Let the script generate its clean JSON files for each driver containing [X, Y, Z, Speed] data.
+
+Storage: Ensure these JSONs are saved to the local temp_data folder.
+
+PHASE 2: Asset Management (JSON Lookup)
+
+Tracks: Read database/tracks.json using the Reference Lap's circuit ID and year. Parse the start/end year logic to find the file path, and import the correct Track Model.
+
+Cars: Iterate through the Queue. Read database/cars.json. Look up the Year -> Team -> Driver Code. Check for Round-specific overrides in specials. Import all corresponding car models.
+
+PHASE 3: Rigging & Animation (Using Lego 2)
+
+Iterate through the imported Car Objects.
+
+The Hook: Select the Car Object. Programmatically trigger the modified Launch Control operator.
+
+Pass the corresponding generated JSON file path from temp_data into the Launch Control operator so it can rig the car and apply the path.
+
+Set the Scene Start/End frames to match the Reference Lap duration.
+
+FINAL EXPECTED OUTCOME
+
+I open Blender, go to the addon, select my queries, add up to 4 laps to the queue, and hit Generate. The right track model appears, the right cars appear (with special liveries if applicable). Launch Control automatically receives the generated JSONs and rigs the cars. I just hit "Play" on the timeline and the cars move correctly based on the data.
