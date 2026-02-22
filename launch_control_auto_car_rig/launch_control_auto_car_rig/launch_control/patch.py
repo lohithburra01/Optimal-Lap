@@ -1,0 +1,9 @@
+import os
+
+
+def add_local_modules_to_path():
+    """Add local modules directory to system path. This is done so the
+    addon can find it's dependencies."""
+    modules_dir = os.path.join(os.path.dirname(__file__), "module")
+    modules_dir = os.path.abspath(modules_dir)
+

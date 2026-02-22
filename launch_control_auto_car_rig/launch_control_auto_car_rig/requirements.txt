@@ -1,0 +1,8 @@
+bpy
+os
+numpy
+math
+textwrap
+mathutils
+datetime
+pythonjsonlogger
