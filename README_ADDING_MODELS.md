@@ -40,7 +40,6 @@ The `refresh_physics()` function in the addon will crash if names don't match.
 
 ## 🏗️ Library Prep Script (Automation)
 Run this script inside your car's `.blend` source file after rigging to automate the hierarchy and naming fixes.
-
 ```python
 import bpy
 
@@ -77,8 +76,24 @@ for obj in bpy.data.objects:
 
 ### Track Models
 - **File Name:** `event_name.lower().replace(" ", "_") + ".blend"`
-- **Example:** `monaco_grand_prix.blend`
+- **Example:** `australian_grand_prix.blend`
 - **Collection:** Must contain the word `track` or `circuit` (case insensitive).
+- **Required Object Name:** The road surface mesh must be named exactly `Track`.
+
+### ⚠️ One-Time Track Alignment (Required Before Use)
+
+Each track must be manually aligned to the GPS coordinate space once before use.
+Once saved, it never needs to be done again for that circuit.
+
+1. Open the track `.blend` file directly in Blender.
+2. Run the F1 path generation script for that circuit — a `GPS_PATH` curve will appear at the origin.
+3. Switch to **top-down orthographic view** (Numpad 7).
+4. Select the **track model** and use **G / R / S** to move, rotate, and scale it until the road sits under the `GPS_PATH` curve. Aim for ~99% coverage.
+5. Delete `GPS_PATH` from the scene.
+6. **Save the `.blend` file.** The alignment is now permanent.
+
+> The pipeline imports tracks with `link=False` so the saved transform is always preserved.  
+> Any remaining misalignment on specific corners can be fixed after scene generation using the **Path Sculpt Brush** in the addon panel.
 
 ### Driver Photos
 - **Path:** `F1_Pipeline_Assets\database\drivers\`
@@ -93,6 +108,5 @@ for obj in bpy.data.objects:
 | :--- | :--- | :--- |
 | **Standard Car** | `cars/2024/TeamName/` | `CarRig_HAM` |
 | **Special Livery** | `cars/2024/TeamName/` | `CarRig_HAM` |
-| **Track Model** | `tracks/` | `track` |
+| **Track Model** | `tracks/` | `track` or `circuit` |
 | **Driver Photo** | `database/drivers/` | N/A |
-
