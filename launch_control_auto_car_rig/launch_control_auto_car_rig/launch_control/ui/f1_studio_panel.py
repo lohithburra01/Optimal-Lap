@@ -69,6 +69,17 @@ class PANEL_PT_F1_Studio(bpy.types.Panel):
         row.operator(OBJECT_OT_f1_generate_scene.bl_idname,
                      icon='RENDER_ANIMATION', text="GENERATE SCENE")
 
+        # ── PATH BRUSH ──────────────────────────────
+        layout.separator()
+        layout.label(text="Path Sculpt Tools", icon='BRUSH_DATA')
+        layout.prop_search(scene, "f1_path_object", bpy.data, "objects", text="Path")
+        row = layout.row(align=True)
+        row.prop(scene, "f1_brush_radius",   text="Radius")
+        row.prop(scene, "f1_brush_strength", text="Strength")
+        layout.prop(scene, "f1_brush_mode", text="Mode")
+        layout.operator("f1.path_brush", text="Sculpt Path", icon='SCULPTMODE_HLT')
+        layout.label(text="M=Push/Pull  Scroll=Radius  Shift+Scroll=Strength", icon='INFO')
+
 
 classes = [PANEL_PT_F1_Studio]
 

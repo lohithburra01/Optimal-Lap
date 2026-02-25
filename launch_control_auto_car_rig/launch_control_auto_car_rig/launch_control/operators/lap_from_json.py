@@ -37,9 +37,9 @@ def _create_curve_from_points(points, closed, name=LAP_CURVE_NAME):
     for i, pt in enumerate(points):
         bp = spline.bezier_points[i]
         bp.co = (pt["x"], pt["y"], pt["z"])
-        # F1 Requirement: VECTOR handles for exact point-to-point lines (no smoothing/overshoot)
-        bp.handle_left_type = 'VECTOR'
-        bp.handle_right_type = 'VECTOR'
+        # F1 Requirement: AUTO handles for smooth bezier curves
+        bp.handle_left_type = 'AUTO'
+        bp.handle_right_type = 'AUTO'
             
     spline.use_cyclic_u = closed
     obj = bpy.data.objects.new(name, curve)
