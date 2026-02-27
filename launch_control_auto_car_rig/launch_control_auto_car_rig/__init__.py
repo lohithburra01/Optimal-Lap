@@ -1,5 +1,5 @@
-""" Launch Control - Auto Car Rig (Lap from JSON)
-    Modified: adds "Lap from JSON" operator for path + speed from JSON.
+""" Hot Lap – F1 Race Replay Studio  (v2.0.0)
+    Built on Launch Control Auto Car Rig.
     Original (C) 2024  Daniel Vesterbaek
 
     This program is free software: you can redistribute it and/or modify

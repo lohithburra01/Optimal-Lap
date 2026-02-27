@@ -2,9 +2,9 @@ schema_version = "1.0.0"
 
 
 id = "launch_control_auto_car_rig"
-version = "1.9.1"
-name = "Launch Control (Lap from JSON)"
-tagline = "Rig, Animate and Calculate Physics for your Vehicles! + Lap from JSON."
+version = "2.2.0"
+name = "Hot Lap – F1 Race Replay Studio"
+tagline = "Generate cinematic F1 race replays from real telemetry data."
 type = "add-on"
 
 maintainer = "Daniel Vesterbaek, Gabriela Rodriguez, Blastframe"

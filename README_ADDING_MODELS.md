@@ -85,6 +85,31 @@ F1_Pipeline_Assets\
 
 > ⚠️ The team folder name must match exactly what FastF1 returns for that team. Check `F1_Pipeline_Assets\database\drivers_by_race.json` to confirm the correct team name spelling for each year.
 
+### How the pipeline finds your car (path rule)
+When you click **Add Lap** in F1 Race Replay Studio, the addon stores **year**, **event**, **session**, **driver**, and **team** from the database. When you click **Generate Scene**, it builds the path to your blend file like this:
+
+```
+F1_Pipeline_Assets/cars/{year}/{team}/{driver}.blend
+```
+
+Example: if you add **Lando Norris** for a **2024** race, the database sets `team` to **McLaren**, so the addon looks for:
+
+- **`F1_Pipeline_Assets/cars/2024/McLaren/NOR.blend`**
+
+So you must have a **team folder** (e.g. `McLaren`) under the year folder. Putting only `NOR.blend` inside `cars/2024/` (with no team subfolder) will not work — the pipeline expects `cars/2024/McLaren/NOR.blend`.
+
+If the path is wrong, check:
+1. The **year** folder: `2024`, `2025`, etc.
+2. The **team** folder: name must match `team_raw` in `F1_Pipeline_Assets/database/drivers_by_race.json` for that year and race (e.g. `McLaren`, `Red Bull Racing`, `Mercedes`).
+3. The **filename**: `NOR.blend` (driver 3-letter code + `.blend`).
+
+### “The path is not getting created” (driving path curve)
+If the **car file is found** but the **driving path** (the curve the car follows) does not appear or has no telemetry:
+
+1. Your car blend must have been **rigged with Launch Control** so it contains a **curve** object (the “driving path” LC creates). The pipeline finds any object of type CURVE inside the `CarRig_*` collection and uses it; then it writes the lap telemetry from the JSON onto that path.
+2. Make sure **Generate Scene** runs without “Car file not found” or “No LC collection found” warnings. If you see those, fix the file path and collection name as above.
+3. The telemetry path is generated only when **Generate Scene** runs (it creates `{driver}_hifi_path.json` and applies it). If the JSON is missing or the operator fails, the path curve may stay empty — check the Blender System Console for errors.
+
 ### Special Liveries (Round-Specific)
 Some races have special one-off liveries — Monaco, home races, anniversary liveries etc. The pipeline supports round-specific overrides automatically.
 

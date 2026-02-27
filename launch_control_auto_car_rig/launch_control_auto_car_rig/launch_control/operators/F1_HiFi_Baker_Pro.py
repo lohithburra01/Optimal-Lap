@@ -548,9 +548,9 @@ def generate_multirail_data(year, gp, session_type, drivers, settings):
     if not ref_data: return "Error: No Ref Data", {}
 
     ref_data['time'] -= ref_data['time'][0]
-    
+
     # --- SMOOTH SPLINE GEOMETRY ---
-    scale_geo = 0.1 
+    scale_geo = 0.1
     path_x = ref_data['x'] * scale_geo
     path_y = ref_data['y'] * scale_geo
     cx, cy = np.mean(path_x), np.mean(path_y)
@@ -560,9 +560,9 @@ def generate_multirail_data(year, gp, session_type, drivers, settings):
     # Lock Physics to Distance
     u_vals = ref_data['dist'] / ref_data['dist'].max()
     smooth_factor = len(path_x) * 10 # Strong smoothing for GPS jitter
-    
+
     is_closed = np.linalg.norm(np.array([path_x[0], path_y[0]]) - np.array([path_x[-1], path_y[-1]])) < 50
-    
+
     try:
         tck, u = splprep([path_x, path_y], u=u_vals, k=3, s=smooth_factor, per=1 if is_closed else 0)
     except:
@@ -572,41 +572,41 @@ def generate_multirail_data(year, gp, session_type, drivers, settings):
     total_len_geo = ref_data['dist'].max() * scale_geo
     num_points = int(total_len_geo / settings['resolution'])
     u_new = np.linspace(0, 1, num_points)
-    
+
     # 0th Derivative (Position)
     x_pts, y_pts = splev(u_new, tck)
     # 1st Derivative (Velocity/Tangent) - GUARANTEES SMOOTHNESS
     dx_pts, dy_pts = splev(u_new, tck, der=1)
-    
+
     base_points = np.column_stack((x_pts, y_pts, np.zeros_like(x_pts)))
-    
+
     # Recalculate physical distance
     segment_lengths = np.sqrt(np.sum(np.diff(base_points, axis=0)**2, axis=1))
     actual_total_len = np.sum(segment_lengths)
-    rail_dist_step = actual_total_len / (num_points - 1) 
+    rail_dist_step = actual_total_len / (num_points - 1)
 
     # --- CURVATURE OFFSETS ---
     lookahead = settings['lookahead']
     width = settings['width']
     offsets_list_L = []
     offsets_list_R = []
-    
+
     for i in range(len(base_points)):
         # Calculate curvature using smooth derivatives
         look_i = (i + lookahead) % len(base_points)
-        
+
         # Tangent at current and lookahead
         tan_curr = np.array([dx_pts[i], dy_pts[i]])
         tan_look = np.array([dx_pts[look_i], dy_pts[look_i]])
-        
+
         # Normalize for cross product check
         if np.linalg.norm(tan_curr) > 0: tan_curr /= np.linalg.norm(tan_curr)
         if np.linalg.norm(tan_look) > 0: tan_look /= np.linalg.norm(tan_look)
-        
+
         cross_z = tan_curr[0]*tan_look[1] - tan_curr[1]*tan_look[0]
         turn_dir = np.sign(cross_z)
-        curve_mag = abs(cross_z) * 10 
-        
+        curve_mag = abs(cross_z) * 10
+
         offset_L = 0.0; offset_R = 0.0
         if curve_mag > 0.1:
             outside = turn_dir * (width * 0.4)
@@ -614,22 +614,20 @@ def generate_multirail_data(year, gp, session_type, drivers, settings):
             t_val = (i % 100) / 100.0
             offset_L = outside + (apex - outside) * (t_val**3)
             offset_R = apex + (outside - apex) * (t_val**0.5)
-            
+
         offsets_list_L.append(offset_L)
         offsets_list_R.append(offset_R)
 
     # Smooth offsets (Window adjusted for high res)
-    window = 400 
+    window = 400
     def smooth_arr(arr):
         padded = np.pad(arr, (window//2, window//2), mode='wrap')
         return np.convolve(padded, np.ones(window)/window, mode='valid')
-    
+
     smooth_L = smooth_arr(offsets_list_L)
     smooth_R = smooth_arr(offsets_list_R)
 
     # --- EXPORT ---
-    # output_dir = os.path.join(os.path.expanduser("~"), "Downloads")
-    # UPDATED: Use the path passed in settings or fallback
     output_dir = settings.get('output_dir', os.path.join(os.path.expanduser("~"), "Downloads"))
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -640,52 +638,52 @@ def generate_multirail_data(year, gp, session_type, drivers, settings):
         metrics_display = "Ref (Baseline)"
         if d == ref_driver:
             f_time_at_dist = interp1d(ref_data['dist'], ref_data['time'], kind='linear', fill_value="extrapolate")
-            my_offset_arr = np.zeros(len(base_points)) 
+            my_offset_arr = np.zeros(len(base_points))
         else:
             tgt_data = get_clean_trace(session, d)
             if not tgt_data: continue
             d_axis, final_delta, metrics = calculate_hifi_delta(ref_data, tgt_data)
-            
+
             if d_axis is not None:
                 fid = metrics['fidelity']['fidelity']
                 int_sc = metrics['integrity']['score']
                 metrics_display = f"Fid:{fid:.0f}% Int:{int_sc:.0f}%"
-                
+
                 ref_time_interp = interp1d(ref_data['dist'], ref_data['time'], fill_value="extrapolate")
                 delta_interp = interp1d(d_axis, final_delta, fill_value="extrapolate")
                 f_time_at_dist = lambda dist_m: float(ref_time_interp(dist_m) + delta_interp(dist_m))
             else:
                 f_time_at_dist = lambda x: 0
-            
+
             my_offset_arr = smooth_L if (d_idx % 2 != 0) else smooth_R
 
         results_map[d] = metrics_display
         driver_points = []
-        
+
         for i in range(len(base_points)):
             # --- NORMAL VECTOR FIX ---
             # Use analytical derivative [dx, dy] rotated 90 deg
             dx, dy = dx_pts[i], dy_pts[i]
-            
+
             # Normal is (-dy, dx)
             normal = np.array([-dy, dx, 0.0])
             norm_mag = np.linalg.norm(normal)
             if norm_mag > 0: normal /= norm_mag
-            
+
             # Apply offset
             pos = base_points[i] + (normal * my_offset_arr[i])
-            
+
             # Physics
             original_dist_ref = u_new[i] * ref_data['dist'].max()
             original_dist_next = u_new[min(i+1, len(u_new)-1)] * ref_data['dist'].max()
-            
+
             t_curr = float(f_time_at_dist(original_dist_ref))
             t_next = float(f_time_at_dist(original_dist_next))
-            
+
             dt = t_next - t_curr
-            if dt <= 0: dt = 0.001 
-            req_speed = rail_dist_step / dt 
-            
+            if dt <= 0: dt = 0.001
+            req_speed = rail_dist_step / dt
+
             driver_points.append({
                 "x": round(float(pos[0]), 3), "y": round(float(pos[1]), 3), "z": 0.0,
                 "speed": round(req_speed, 2)
@@ -695,7 +693,7 @@ def generate_multirail_data(year, gp, session_type, drivers, settings):
             "name": f"F1_{d}_{gp}", "closed": True, "points": driver_points,
             "launch_control": {"speed_unit": "m/s", "source": "Hi-Fi Baker"}
         }
-        
+
         fname = os.path.join(output_dir, f"{d}_hifi_path.json")
         with open(fname, 'w') as f: json.dump(json_data, f, indent=2)
 
@@ -703,8 +701,11 @@ def generate_multirail_data(year, gp, session_type, drivers, settings):
     # CALL NEW CSV GENERATOR
     generate_telemetry_csv(year, gp, session_type, drivers, settings)
 
-    # CALL MINIMAP GENERATOR
-    generate_minimap_frames(session, drivers, output_dir, ref_driver, year, gp)
+    # CALL MINIMAP GENERATOR (if enabled)
+    if settings.get('render_minimap', True):
+        generate_minimap_frames(session, drivers, output_dir, ref_driver, year, gp)
+    else:
+        print("[F1 Baker] Minimap rendering skipped (disabled in settings)")
 
     return f"Saved to {output_dir}", results_map, ref_data['lap_time']
 

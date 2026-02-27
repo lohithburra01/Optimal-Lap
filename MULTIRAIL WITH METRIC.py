@@ -107,6 +107,38 @@ def calculate_fidelity(scale, local_shifts, track_len, raw_d, smooth_d, lap_time
     total = step1 + step2 + step3 + step4
     return {'fidelity': round(100.0 - total, 3)}
 
+def _clean_path_outliers(x, y, closed=True, sigma=3.0, passes=2):
+    """
+    Remove GPS outliers while preserving original path shape.
+    Outlier = point whose deviation from the midpoint of its neighbours
+    exceeds median + sigma * MAD.  Only those points are replaced with
+    the neighbour-midpoint; everything else is untouched.
+    """
+    x = np.asarray(x, dtype=float).copy()
+    y = np.asarray(y, dtype=float).copy()
+    n = len(x)
+    if n < 4:
+        return x, y
+    for _ in range(passes):
+        dev = np.zeros(n)
+        ex = np.zeros(n)
+        ey = np.zeros(n)
+        for i in range(n):
+            prev_i = (i - 1) % n if closed else max(0, i - 1)
+            next_i = (i + 1) % n if closed else min(n - 1, i + 1)
+            ex[i] = (x[prev_i] + x[next_i]) * 0.5
+            ey[i] = (y[prev_i] + y[next_i]) * 0.5
+            dev[i] = np.hypot(x[i] - ex[i], y[i] - ey[i])
+        med = np.median(dev)
+        mad = np.median(np.abs(dev - med)) or 1e-9
+        thresh = med + sigma * mad
+        for i in range(n):
+            if dev[i] > thresh:
+                x[i] = ex[i]
+                y[i] = ey[i]
+    return x, y
+
+
 def get_clean_trace(session, driver):
     try:
         laps = session.laps.pick_drivers(driver)
@@ -115,7 +147,7 @@ def get_clean_trace(session, driver):
         tel = lap.get_telemetry().dropna(subset=['Distance', 'Speed', 'X', 'Y']).drop_duplicates(subset=['Time'])
         tel = tel.drop_duplicates(subset=['Distance'])
         return {
-            'dist': tel['Distance'].values, 'speed': tel['Speed'].values, 
+            'dist': tel['Distance'].values, 'speed': tel['Speed'].values,
             'time': tel['Time'].dt.total_seconds().values, 'driver': driver,
             'lap_time': lap['LapTime'].total_seconds(), 'x': tel['X'].values, 'y': tel['Y'].values
         }
@@ -212,24 +244,28 @@ def generate_multirail_data(year, gp, session_type, drivers, settings):
 
     ref_data['time'] -= ref_data['time'][0]
     
-    # --- SMOOTH SPLINE GEOMETRY ---
-    scale_geo = 0.1 
+    scale_geo = 0.1
     path_x = ref_data['x'] * scale_geo
     path_y = ref_data['y'] * scale_geo
     cx, cy = np.mean(path_x), np.mean(path_y)
     path_x -= cx
     path_y -= cy
 
-    # Lock Physics to Distance
-    u_vals = ref_data['dist'] / ref_data['dist'].max()
-    smooth_factor = len(path_x) * 10 # Strong smoothing for GPS jitter
-    
+    # --- GPS OUTLIER CLEANING (preserves original path, removes only bad points) ---
     is_closed = np.linalg.norm(np.array([path_x[0], path_y[0]]) - np.array([path_x[-1], path_y[-1]])) < 50
-    
+    path_x, path_y = _clean_path_outliers(path_x, path_y, closed=is_closed, sigma=3.0, passes=2)
+
+    # --- SPLINE PATH: light smoothing after outlier cleaning (preserves original path) ---
+    u_vals = ref_data['dist'] / ref_data['dist'].max()
+    # After outlier cleaning, only minimal smoothing is needed to get a
+    # differentiable spline.  s = N * 0.1 keeps the spline very close to
+    # the cleaned data points instead of reshaping the racing line.
+    smooth_factor = len(path_x) * 0.1
+
     try:
         tck, u = splprep([path_x, path_y], u=u_vals, k=3, s=smooth_factor, per=1 if is_closed else 0)
     except:
-        tck, u = splprep([path_x, path_y], s=len(path_x), per=0)
+        tck, u = splprep([path_x, path_y], s=len(path_x) * 0.1, per=0)
 
     # --- KEY FIX: ANALYTICAL DERIVATIVES ---
     total_len_geo = ref_data['dist'].max() * scale_geo

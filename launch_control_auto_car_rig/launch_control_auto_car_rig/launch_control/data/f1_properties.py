@@ -1,7 +1,10 @@
 import bpy
 import json
 import os
-from bpy.props import StringProperty, IntProperty, EnumProperty, CollectionProperty, PointerProperty
+import math
+from bpy.props import (StringProperty, IntProperty, EnumProperty,
+                       CollectionProperty, PointerProperty, FloatProperty,
+                       BoolProperty)
 
 # ── DATABASE LOADER ──────────────────────────────────────────────────────────
 
@@ -74,12 +77,24 @@ def _driver_items(self, context):
         drivers = _DRV_BY_SEASON.get(year, [])
     if not drivers:
         return [('NONE', 'No drivers – check database', '')]
-    return [
-        (d['code'],
-         f"{d['full_name']}  [{d['team_raw']}]",
-         f"#{d['number']}  {d['code']}")
-        for d in drivers
-    ]
+
+    # Sort drivers by team name so teammates are grouped together
+    sorted_drivers = sorted(drivers, key=lambda d: d.get('team_raw', ''))
+
+    items = []
+    prev_team = None
+    for d in sorted_drivers:
+        team = d.get('team_raw', '')
+        # Insert a separator between different teams
+        if prev_team is not None and team != prev_team:
+            items.append(('', '', ''))
+        prev_team = team
+        items.append((
+            d['code'],
+            f"{d['full_name']}  [{team}]",
+            f"#{d['number']}  {d['code']}",
+        ))
+    return items
 
 
 # ── UPDATE CALLBACKS ──────────────────────────────────────────────────────────
@@ -145,6 +160,103 @@ class F1_Pipeline_Props(bpy.types.PropertyGroup):
     )
 
     status_msg: StringProperty(name="Status", default="Ready")
+
+    # ── GENERATION OPTIONS ───────────────────────────────────────────────
+    render_minimap: BoolProperty(
+        name="Render Track Map",
+        description="Generate minimap video frames during scene generation",
+        default=True,
+    )
+
+    # ── TRACK ALIGNMENT ──────────────────────────────────────────────────
+    align_offset_x: FloatProperty(
+        name="Offset X",
+        description="Shift all telemetry paths along X to align with the track model",
+        default=0.0,
+        unit='LENGTH',
+        update=lambda self, ctx: _on_alignment_changed(self, ctx),
+    )
+    align_offset_y: FloatProperty(
+        name="Offset Y",
+        description="Shift all telemetry paths along Y to align with the track model",
+        default=0.0,
+        unit='LENGTH',
+        update=lambda self, ctx: _on_alignment_changed(self, ctx),
+    )
+    align_rotation: FloatProperty(
+        name="Rotation",
+        description="Rotate all telemetry paths around Z to align with the track model",
+        default=0.0,
+        subtype='ANGLE',
+        update=lambda self, ctx: _on_alignment_changed(self, ctx),
+    )
+    align_scale: FloatProperty(
+        name="Scale",
+        description="Uniformly scale all telemetry paths to match the track model size",
+        default=1.0,
+        min=0.01,
+        soft_min=0.5,
+        soft_max=2.0,
+        update=lambda self, ctx: _on_alignment_changed(self, ctx),
+    )
+
+    # ── PATH DIAGNOSTIC / CORRECTION ─────────────────────────────────────
+    track_surface_obj: PointerProperty(
+        type=bpy.types.Object,
+        name="Track Surface",
+        description="Mesh object representing the track surface (used for on/off-track detection)",
+        poll=lambda self, obj: obj.type == 'MESH',
+    )
+    correction_falloff: IntProperty(
+        name="Falloff",
+        description="Number of neighboring vertices on each side to blend the correction into",
+        default=15,
+        min=1,
+        soft_max=50,
+    )
+    correction_strength: FloatProperty(
+        name="Strength",
+        description="How aggressively off-track vertices are pulled back (1.0 = fully to track edge)",
+        default=1.0,
+        min=0.0,
+        max=1.0,
+    )
+    normalize_z_value: FloatProperty(
+        name="Target Z",
+        description="Target height when flattening path vertices",
+        default=0.0,
+        unit='LENGTH',
+    )
+
+
+# ── ALIGNMENT CALLBACK ──────────────────────────────────────────────────────
+
+def _get_f1_path_curves(scene):
+    """Return all F1 telemetry path curve objects in the scene."""
+    paths = []
+    for car in scene.lc.cars:
+        if car.driving_path and car.driving_path.type == 'CURVE':
+            paths.append(car.driving_path)
+    return paths
+
+
+def _on_alignment_changed(props, context):
+    """Move/rotate/scale all F1 path curves when alignment sliders change."""
+    scene = context.scene
+    paths = _get_f1_path_curves(scene)
+    if not paths:
+        return
+
+    ox = props.align_offset_x
+    oy = props.align_offset_y
+    rot = props.align_rotation
+    sc = props.align_scale
+
+    for path_obj in paths:
+        path_obj.location.x = ox
+        path_obj.location.y = oy
+        path_obj.rotation_euler.z = rot
+        path_obj.scale = (sc, sc, sc)
 
 
 # ── REGISTRATION ──────────────────────────────────────────────────────────────

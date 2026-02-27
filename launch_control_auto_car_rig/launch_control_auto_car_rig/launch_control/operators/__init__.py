@@ -64,6 +64,15 @@ classes_tuple = (
     f1_pipeline.OBJECT_OT_f1_add_lap_to_queue,
     f1_pipeline.OBJECT_OT_f1_remove_lap,
     f1_pipeline.OBJECT_OT_f1_clear_queue,
+    f1_pipeline.OBJECT_OT_f1_save_alignment,
+    f1_pipeline.OBJECT_OT_f1_load_alignment,
+    f1_pipeline.OBJECT_OT_f1_reset_alignment,
+    f1_pipeline.OBJECT_OT_f1_diagnose_path,
+    f1_pipeline.OBJECT_OT_f1_correct_path,
+    f1_pipeline.OBJECT_OT_f1_auto_correct_path,
+    f1_pipeline.OBJECT_OT_f1_clear_diagnostic,
+    f1_pipeline.OBJECT_OT_f1_flatten_z,
+    f1_pipeline.OBJECT_OT_f1_snap_z_to_track,
 
 
 )

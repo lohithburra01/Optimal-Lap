@@ -286,5 +286,15 @@
         "file_path": "tracks/abudhabi_twist.blend"
       }
     ]
+  },
+  "bahrain_grand_prix": {
+    "track_name": "Bahrain Grand Prix",
+    "versions": [],
+    "alignment": {
+      "offset_x": 150.87,
+      "offset_y": -294.8,
+      "rotation": -1.529432,
+      "scale": 1.0
+    }
   }
 }

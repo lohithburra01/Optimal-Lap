@@ -110,6 +110,68 @@ class OBJECT_OT_apply_lap_from_json(bpy.types.Operator):
         context.window_manager.fileselect_add(self)
         return {"RUNNING_MODAL"}
 
+    def _verify_driving_setup(self, active_car, rig_object, driving_path):
+        """Verify and fix the driving setup after prepare_animation.
+        Ensures eval_time drivers, Follow Path constraints, and path_duration
+        all reference the correct objects for THIS car.
+        """
+        print(f"  [F1 Lap] 🔍 Verifying driving setup for: {active_car.name}")
+        print(f"    driving_path: {driving_path.name}")
+        print(f"    path_duration: {driving_path.data.path_duration}")
+        print(f"    use_path: {driving_path.data.use_path}")
+
+        # --- Check eval_time drivers on Object level ---
+        if driving_path.animation_data:
+            for drv in driving_path.animation_data.drivers:
+                if 'eval_time' in drv.data_path:
+                    for var in drv.driver.variables:
+                        for target in var.targets:
+                            tid = target.id
+                            if tid and tid != rig_object:
+                                print(f"    ⚠️ eval_time driver target MISMATCH: "
+                                      f"{tid.name} -> fixing to {rig_object.name}")
+                                target.id = rig_object
+                            elif tid:
+                                print(f"    ✅ eval_time driver target OK: {tid.name}")
+
+        # --- Check eval_time drivers on Data level ---
+        if driving_path.data.animation_data:
+            for drv in driving_path.data.animation_data.drivers:
+                if 'eval_time' in drv.data_path:
+                    for var in drv.driver.variables:
+                        for target in var.targets:
+                            tid = target.id
+                            if tid and tid != rig_object:
+                                print(f"    ⚠️ eval_time DATA driver target MISMATCH: "
+                                      f"{tid.name} -> fixing to {rig_object.name}")
+                                target.id = rig_object
+                            elif tid:
+                                print(f"    ✅ eval_time DATA driver target OK: {tid.name}")
+
+        # --- Check Follow Path constraint on bone_find_up_dir ---
+        try:
+            bones = rig_object.pose.bones
+            fp = bones["bone_find_up_dir"].constraints.get("Follow Path")
+            if fp:
+                if fp.target != driving_path:
+                    old_name = fp.target.name if fp.target else "NONE"
+                    print(f"    ⚠️ Follow Path target MISMATCH: "
+                          f"{old_name} -> fixing to {driving_path.name}")
+                    fp.target = driving_path
+                else:
+                    print(f"    ✅ Follow Path target OK: {fp.target.name}")
+            else:
+                print(f"    ⚠️ No 'Follow Path' constraint on bone_find_up_dir")
+        except Exception as e:
+            print(f"    ⚠️ Follow Path check error: {e}")
+
+        # --- Check action ---
+        if rig_object.animation_data and rig_object.animation_data.action:
+            act = rig_object.animation_data.action
+            print(f"    Action: {act.name} ({len(act.fcurves)} fcurves)")
+        else:
+            print(f"    ⚠️ No action on rig!")
+
     def execute(self, context):
         scene = context.scene
         active_car = scene.lc.find_selected()
@@ -145,8 +207,10 @@ class OBJECT_OT_apply_lap_from_json(bpy.types.Operator):
             
         closed = data.get("closed", False) # Default to false for F1 segments often? Or True for laps.
 
-        # 1. Create Curve (AUTO handles)
-        curve_obj = _create_curve_from_points(points, closed)
+        # 1. Create Curve (unique name per car to avoid collisions)
+        car_name = active_car.name if active_car.name else "unknown"
+        curve_name = f"LC_LapPath_{car_name}"
+        curve_obj = _create_curve_from_points(points, closed, name=curve_name)
         
         # 2. Assign to Car
         props = active_car.properties
@@ -165,31 +229,39 @@ class OBJECT_OT_apply_lap_from_json(bpy.types.Operator):
         bpy.ops.object.select_all(action='DESELECT')
         active_car.rig_object.select_set(True)
         context.view_layer.objects.active = active_car.rig_object
-        
+
         result = bpy.ops.object.prepare_animation()
         if result != {"FINISHED"}:
             return result
 
+        # 4b. Post-animation diagnostics & fixes
+        # Re-read driving_path in case prepare_animation changed references
+        driving_path = active_car.driving_path
+        self._verify_driving_setup(active_car, rig_object, driving_path)
+
         # 5. Bake Speed Keyframes
         data_path_speed = 'pose.bones["%s"].rotation_euler' % B_SPEED_ROTATE
-        
+
         # Get Action
         if not rig_object.animation_data:
             rig_object.animation_data_create()
         action = rig_object.animation_data.action
-        
+
         # Clear existing
         fc = action.fcurves.find(data_path_speed, index=2)
         if fc: action.fcurves.remove(fc)
         fc = action.fcurves.new(data_path_speed, index=2)
-        
+
         # Insert Keys
         for f, v in zip(kf_frames, kf_values):
             k = fc.keyframe_points.insert(f, v)
             k.interpolation = 'LINEAR'
-            
-        # 6. REFRESH PHYSICS (Critical Step)
-        bpy.ops.object.refresh_physics()
+
+        # 6. REFRESH PHYSICS (Critical Step — may fail if sim objects are missing)
+        try:
+            bpy.ops.object.refresh_physics()
+        except Exception as e:
+            print(f"[F1 Lap] Physics refresh skipped: {e}")
 
         log_info(f"F1 Lap Applied: {len(points)} points, {total_time:.1f}s", "OBJECT_OT_apply_lap_from_json")
         self.report({'INFO'}, f"F1 Lap Applied: {len(points)} points")

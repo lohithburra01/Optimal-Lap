@@ -4,16 +4,25 @@ from ..operators.f1_pipeline import (
     OBJECT_OT_f1_generate_scene,
     OBJECT_OT_f1_add_lap_to_queue,
     OBJECT_OT_f1_remove_lap,
-    OBJECT_OT_f1_clear_queue
+    OBJECT_OT_f1_clear_queue,
+    OBJECT_OT_f1_save_alignment,
+    OBJECT_OT_f1_load_alignment,
+    OBJECT_OT_f1_reset_alignment,
+    OBJECT_OT_f1_diagnose_path,
+    OBJECT_OT_f1_correct_path,
+    OBJECT_OT_f1_auto_correct_path,
+    OBJECT_OT_f1_clear_diagnostic,
+    OBJECT_OT_f1_flatten_z,
+    OBJECT_OT_f1_snap_z_to_track,
 )
 
 
 class PANEL_PT_F1_Studio(bpy.types.Panel):
-    bl_label       = "F1 Race Replay Studio"
+    bl_label       = "Hot Lap – F1 Race Replay Studio"
     bl_idname      = "PANEL_PT_F1_Studio"
     bl_space_type  = "VIEW_3D"
     bl_region_type = "UI"
-    bl_category    = "Launch Control"
+    bl_category    = "Hot Lap"
 
     def draw(self, context):
         layout = self.layout
@@ -63,11 +72,67 @@ class PANEL_PT_F1_Studio(bpy.types.Panel):
         layout.separator()
         layout.label(text=f"Status: {props.status_msg}")
 
+        layout.prop(props, "render_minimap", icon='SEQ_PREVIEW')
+
         row = layout.row()
         row.scale_y = 2.0
         row.enabled = len(scene.f1_lap_queue) > 0
         row.operator(OBJECT_OT_f1_generate_scene.bl_idname,
                      icon='RENDER_ANIMATION', text="GENERATE SCENE")
+
+        # ── 5. TRACK ALIGNMENT ─────────────────────────────────────────
+        layout.separator()
+        box = layout.box()
+        row = box.row()
+        row.label(text="Track Alignment", icon='ORIENTATION_GLOBAL')
+        row.operator(OBJECT_OT_f1_reset_alignment.bl_idname, text="", icon='LOOP_BACK')
+
+        col = box.column(align=True)
+        col.prop(props, "align_offset_x")
+        col.prop(props, "align_offset_y")
+        col.prop(props, "align_rotation")
+        col.prop(props, "align_scale")
+
+        row = box.row(align=True)
+        row.operator(OBJECT_OT_f1_save_alignment.bl_idname,
+                     icon='FILE_TICK', text="Save")
+        row.operator(OBJECT_OT_f1_load_alignment.bl_idname,
+                     icon='FILE_FOLDER', text="Load")
+
+        # ── 6. PATH DIAGNOSTIC ────────────────────────────────────────
+        layout.separator()
+        box = layout.box()
+        row = box.row()
+        row.label(text="Path Diagnostic", icon='OUTLINER_OB_CURVE')
+        row.operator(OBJECT_OT_f1_clear_diagnostic.bl_idname, text="", icon='TRASH')
+
+        box.prop(props, "track_surface_obj")
+
+        # Height normalization
+        row = box.row(align=True)
+        row.label(text="Height:", icon='EMPTY_SINGLE_ARROW')
+        row.operator(OBJECT_OT_f1_flatten_z.bl_idname, text="Flatten")
+        row.operator(OBJECT_OT_f1_snap_z_to_track.bl_idname, text="Snap to Track")
+        box.prop(props, "normalize_z_value")
+
+        box.separator()
+
+        # XY correction
+        row = box.row(align=True)
+        row.scale_y = 1.3
+        row.operator(OBJECT_OT_f1_diagnose_path.bl_idname,
+                     icon='VIEWZOOM', text="Diagnose")
+        row.operator(OBJECT_OT_f1_correct_path.bl_idname,
+                     icon='MOD_SMOOTH', text="Correct")
+
+        row = box.row()
+        row.scale_y = 1.5
+        row.operator(OBJECT_OT_f1_auto_correct_path.bl_idname,
+                     icon='FILE_REFRESH', text="Auto-Correct (until on-track)")
+
+        col = box.column(align=True)
+        col.prop(props, "correction_falloff")
+        col.prop(props, "correction_strength")
 
 
 classes = [PANEL_PT_F1_Studio]
