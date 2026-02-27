@@ -1316,13 +1316,18 @@ def toggle_edit_all_mode(self, context):
             settings = car.settings
             props = car.properties
             # skidmarks
-            settings.enable_skidmarks = not car.skidmark_collection.hide_viewport
+            try:
+                if car.skidmark_collection is not None:
+                    settings.enable_skidmarks = not car.skidmark_collection.hide_viewport
 
-            mul = car.skidmark_material.node_tree.nodes["Bright/Contrast"].inputs[1]
-            var = car.skidmark_material.node_tree.nodes["Bright/Contrast"].inputs[2]
+                if car.skidmark_material is not None:
+                    mul = car.skidmark_material.node_tree.nodes["Bright/Contrast"].inputs[1]
+                    var = car.skidmark_material.node_tree.nodes["Bright/Contrast"].inputs[2]
 
-            props.skidmarks_mul = mul.default_value/6
-            props.skidmarks_var = var.default_value/15
+                    props.skidmarks_mul = mul.default_value/6
+                    props.skidmarks_var = var.default_value/15
+            except Exception as e:
+                print(f"[LC] toggle_edit_all_mode skidmark error for {car.name}: {e}")
 
 
             # speedometer
@@ -1330,10 +1335,16 @@ def toggle_edit_all_mode(self, context):
 
             # view panel
             try:
-                settings.show_extra_animation_controls = car.rig_armature.collections["Extra Controls"].is_visible
+                if car.rig_armature is None:
+                    print(f"[LC] toggle_edit_all_mode: rig_armature is None for {car.name}, skipping")
+                else:
+                    settings.show_extra_animation_controls = car.rig_armature.collections["Extra Controls"].is_visible
             except:
-                #Fallback for LC 1.5
-                settings.show_extra_animation_controls = car.rig_armature.collections["Layer 3"].is_visible
+                try:
+                    #Fallback for LC 1.5
+                    settings.show_extra_animation_controls = car.rig_armature.collections["Layer 3"].is_visible
+                except:
+                    print(f"[LC] toggle_edit_all_mode: could not read bone collections for {car.name}")
 
             settings.show_ground_grid = not car.ground_local_object.hide_viewport
             settings.grid_resolution = car.ground_local_object.modifiers["Ground Detect RESOLUTION"].levels
@@ -1445,7 +1456,7 @@ def update_user_path_range(self, context):
     if props.frame_custom_path_end < props.frame_custom_path_start:
         props.frame_custom_path_start = props.frame_custom_path_end
 
-    return True
+    return None
         
 
 

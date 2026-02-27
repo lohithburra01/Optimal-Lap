@@ -59,12 +59,233 @@ class F1_Database_Manager:
 # ==============================================================================
 # PIPELINE OPERATOR
 # ==============================================================================
+# ---------------------------------------------------------------------------
+# Module-level state for the deferred per-car pipeline.
+# bpy.app.timers callbacks don't carry instance state, so we store it here.
+# ---------------------------------------------------------------------------
+_pipeline_queue = []        # list of dicts (one per car to process)
+_pipeline_index = 0
+_pipeline_temp_dir = ""
+_pipeline_first_event = ""
+_pipeline_original_edit_all = False
+
+
+def _deferred_process_next_car():
+    """bpy.app.timers callback — processes the next car in the queue.
+
+    Returning None means 'don't reschedule'. Returning a float reschedules
+    after that many seconds.  We process ONE car per call so Blender gets a
+    full event-loop cycle between cars (exactly like clicking Generate twice).
+    """
+    global _pipeline_queue, _pipeline_index
+
+    scene = bpy.context.scene
+    if _pipeline_index >= len(_pipeline_queue):
+        # All done — run the finishing steps
+        _pipeline_finish()
+        return None                      # stop the timer
+
+    item = _pipeline_queue[_pipeline_index]
+    i = _pipeline_index
+    total = len(_pipeline_queue)
+    _pipeline_index += 1
+
+    print(f"\n[F1 Studio] ═══ Processing car {i+1}/{total}: {item['driver']} ═══")
+
+    try:
+        _generate_single_car(item)
+    except Exception as e:
+        print(f"[F1 Studio] ❌ Error processing {item['driver']}: {e}")
+        import traceback
+        traceback.print_exc()
+
+    # Return 0.5 to schedule the *next* car after 0.5 s, giving Blender a
+    # full event-loop cycle to flush depsgraph, exactly like the manual flow.
+    if _pipeline_index < len(_pipeline_queue):
+        return 0.5
+    else:
+        _pipeline_finish()
+        return None
+
+
+def _generate_single_car(item):
+    """Append one car, register it with LC, apply its telemetry JSON."""
+    global _pipeline_temp_dir
+
+    scene = bpy.context.scene
+    db = F1_Database_Manager()
+
+    # Force single-car mode so prepare_animation only touches THIS car
+    scene.settings.edit_all_mode = False
+
+    # --- 1. APPEND ---
+    car_path = db.get_car_path(item['year'], item['team'], item['driver'])
+    if not os.path.exists(car_path):
+        print(f"[F1 Studio] ⚠️ Car file not found: {car_path}")
+        return
+
+    existing_colls = set(c.name for c in bpy.data.collections)
+
+    with bpy.data.libraries.load(car_path, link=False) as (data_from, data_to):
+        car_colls = [c for c in data_from.collections if 'CarRig' in c]
+        if not car_colls:
+            print(f"[F1 Studio] ⚠️ No CarRig collection in {car_path}")
+            return
+        data_to.collections = list(data_from.collections)
+
+    carrig_coll = None
+    for coll in bpy.data.collections:
+        if coll.name in existing_colls:
+            continue
+        if coll.name.startswith('CarRig'):
+            carrig_coll = coll
+        is_child = False
+        for parent in bpy.data.collections:
+            if parent is coll:
+                continue
+            if coll.name in [c.name for c in parent.children]:
+                is_child = True
+                break
+        if not is_child:
+            try:
+                scene.collection.children.link(coll)
+            except RuntimeError:
+                pass
+
+    if not carrig_coll:
+        print(f"[F1 Studio] ⚠️ No CarRig collection found after append for {item['driver']}")
+        return
+    print(f"[F1 Studio] Appended {item['driver']} -> {carrig_coll.name}")
+
+    bpy.context.view_layer.update()
+
+    # --- 2. FIND LAUNCHCONTROL PARENT ---
+    lc_parents = []
+    for coll in scene.collection.children:
+        if 'LaunchControl' in coll.name:
+            lc_parents.append(coll)
+    for coll in scene.collection.children_recursive:
+        if 'LaunchControl' in coll.name and coll not in lc_parents:
+            lc_parents.append(coll)
+
+    search_coll = None
+    car_coll = None
+    for lc in lc_parents:
+        for child in lc.children_recursive:
+            if child.name.startswith('CarRig') and item['driver'] in child.name:
+                search_coll = lc
+                car_coll = child
+                break
+        if search_coll:
+            break
+
+    if search_coll is None and lc_parents:
+        search_coll = lc_parents[-1]
+        for child in search_coll.children_recursive:
+            if child.name.startswith('CarRig'):
+                car_coll = child
+                break
+        if car_coll is None:
+            car_coll = search_coll
+
+    if search_coll is None:
+        print(f"[F1 Studio] ⚠️ No LaunchControl found for {item['driver']}")
+        return
+
+    # --- 3. REGISTER WITH LC ---
+    rig_obj = None
+    driving_path = None
+    sim_body = None
+    sim_wheels = None
+    sim_track_to = None
+
+    for obj in search_coll.all_objects:
+        n = obj.name
+        if obj.type == 'ARMATURE' and rig_obj is None:
+            rig_obj = obj
+        if obj.type == 'CURVE' and driving_path is None:
+            driving_path = obj
+        if n.startswith('sim_Body') and sim_body is None:
+            sim_body = obj
+        if n.startswith('sim_Wheels') and 'initial' not in n.lower() and sim_wheels is None:
+            sim_wheels = obj
+        if n.startswith('sim_TrackTo') and sim_track_to is None:
+            sim_track_to = obj
+
+    print(f"[F1 Studio] Registering {item['driver']} -> {car_coll.name}")
+    print(f"  rig={rig_obj.name if rig_obj else 'MISSING'}  "
+          f"curve={driving_path.name if driving_path else 'MISSING'}")
+
+    car = None
+    for c in scene.lc.cars:
+        if c.collection and c.collection.name == car_coll.name:
+            car = c
+            break
+    if car is None:
+        car = scene.lc.add(car_coll, car_coll.name)
+
+    car.rig_object = rig_obj
+    car.driving_path = driving_path
+    car.rig_collection = car_coll
+    car.lc_collection = search_coll
+    car.sim_body = sim_body
+    car.sim_wheels = sim_wheels
+    car.sim_track_to = sim_track_to
+
+    scene.car_collection = car_coll          # make LC's find_selected() return THIS car
+
+    # --- 4. APPLY TELEMETRY JSON ---
+    json_path = os.path.join(_pipeline_temp_dir, f"{item['driver']}_hifi_path.json")
+    if os.path.isfile(json_path):
+        result = bpy.ops.object.apply_lap_from_json(filepath=json_path)
+        print(f"[F1 Studio] {item['driver']} apply_lap result: {result}")
+    else:
+        print(f"[F1 Studio] ⚠️ JSON not found: {json_path}")
+
+    bpy.context.view_layer.update()
+    print(f"[F1 Studio] ═══ {item['driver']} COMPLETE ═══\n")
+
+
+def _pipeline_finish():
+    """Final housekeeping after all cars are processed."""
+    global _pipeline_original_edit_all, _pipeline_first_event
+
+    scene = bpy.context.scene
+    scene.settings.edit_all_mode = _pipeline_original_edit_all
+
+    # Link track meshes into each car's GroundDetection
+    # (track is already in scene — just need to reference it)
+    track_surface = bpy.data.objects.get("Track")
+    if track_surface:
+        ground_objects = [track_surface]
+        cosmetic_coll = bpy.data.collections.get("track_cosmetic")
+        if cosmetic_coll:
+            for obj in cosmetic_coll.all_objects:
+                if obj.type == 'MESH' and obj not in ground_objects:
+                    ground_objects.append(obj)
+
+        for coll in scene.collection.children_recursive:
+            if coll.name.startswith('GroundDetection'):
+                existing = {o.name for o in coll.objects}
+                for obj in ground_objects:
+                    if obj.name not in existing:
+                        try:
+                            coll.objects.link(obj)
+                        except RuntimeError:
+                            pass
+
+    print(f"[F1 Studio] ═══ ALL {len(_pipeline_queue)} CARS COMPLETE ═══")
+
+
 class OBJECT_OT_f1_generate_scene(Operator):
     bl_idname = "f1.generate_scene"
     bl_label = "Generate Scene"
     bl_description = "Generates the F1 Scene based on the Lap Queue"
 
     def execute(self, context):
+        global _pipeline_queue, _pipeline_index, _pipeline_temp_dir
+        global _pipeline_first_event, _pipeline_original_edit_all
+
         scene = context.scene
         queue = scene.f1_lap_queue
 
@@ -74,178 +295,88 @@ class OBJECT_OT_f1_generate_scene(Operator):
 
         db = F1_Database_Manager()
 
-        # Resolve track path from first queue item
-        first_item = scene.f1_lap_queue[0]
-        track_path = db.get_track_path(first_item.event)
+        # ── 1. LOAD TRACK (only if not already present) ──
+        first_item = queue[0]
+        _pipeline_first_event = first_item.event
 
-        # LOAD TRACK
-        track_mesh_objects = []
-        if os.path.exists(track_path):
-            track_mesh_objects = self.load_track(track_path)
-        else:
-            self.report({'WARNING'}, f"Track file not found: {track_path}")
+        track_already_loaded = bpy.data.objects.get("Track") is not None
+        if not track_already_loaded:
+            track_path = db.get_track_path(first_item.event)
+            if os.path.exists(track_path):
+                self.load_track(track_path)
+            else:
+                self.report({'WARNING'}, f"Track file not found: {track_path}")
 
-        # GENERATE TELEMETRY
+        # ── 2. GENERATE TELEMETRY for ALL drivers upfront ──
         batches = {}
         for item in queue:
-            key = (item.year, item.event, item.session)
+            if item.is_testing:
+                key = (item.year, item.event, item.session,
+                       True, item.test_number, item.test_session)
+            else:
+                key = (item.year, item.event, item.session,
+                       False, 0, 0)
             if key not in batches:
                 batches[key] = []
             batches[key].append(item.driver)
 
-        temp_data_dir = db.get_temp_dir()
-        generated_files = {}
+        _pipeline_temp_dir = db.get_temp_dir()
 
         props = scene.f1_pipeline_props
-        for (year, event, session), drivers in batches.items():
+        for (year, event, session, is_testing, test_num, test_sess), drivers in batches.items():
             settings = {
                 'resolution': 0.5, 'width': 6.0, 'lookahead': 70,
-                'output_dir': temp_data_dir,
+                'output_dir': _pipeline_temp_dir,
                 'render_minimap': props.render_minimap,
             }
+            if is_testing:
+                settings['is_testing']    = True
+                settings['test_number']   = test_num
+                settings['test_session']  = test_sess
+
             if F1_HiFi_Baker_Pro.MISSING_DEPS:
                 self.report({'ERROR'}, "Missing Dependencies. Please install FastF1 via preferences.")
                 return {'CANCELLED'}
 
-            msg, map, lap_time = F1_HiFi_Baker_Pro.generate_multirail_data(year, event, session, drivers, settings)
+            msg, _map, _lt = F1_HiFi_Baker_Pro.generate_multirail_data(
+                year, event, session, drivers, settings)
             print(f"Baker: {msg}")
 
-            for d in drivers:
-                generated_files[d] = os.path.join(temp_data_dir, f"{d}_hifi_path.json")
+        # ── 3. SNAPSHOT the queue and clear it ──
+        _pipeline_queue = []
+        for item in queue:
+            _pipeline_queue.append({
+                'year': item.year, 'event': item.event,
+                'session': item.session, 'driver': item.driver,
+                'team': item.team, 'track_id': item.track_id,
+                'is_testing': item.is_testing,
+                'test_number': item.test_number,
+                'test_session': item.test_session,
+            })
 
-        # STEP 1 - APPEND ALL CARS FIRST (no LC registration yet)
-        appended_colls = []
-        for item in scene.f1_lap_queue:
-            car_path = db.get_car_path(item.year, item.team, item.driver)
-            if os.path.exists(car_path):
-                new_coll = self.append_car_lc(car_path)
-                if new_coll:
-                    appended_colls.append((item.driver, new_coll))
-                    print(f"[F1 Studio] Appended {item.driver} -> {new_coll.name}")
-                else:
-                    self.report({'WARNING'}, f"No CarRig collection found in {car_path}")
-            else:
-                self.report({'WARNING'}, f"Car file not found: {car_path}")
+        _pipeline_original_edit_all = scene.settings.edit_all_mode
+        scene.settings.edit_all_mode = False
 
-        # STEP 2 - ALL CARS APPENDED, NOW REGISTER WITH LC AND APPLY JSON
-        # Strategy: Find LaunchControl collections first (top-level containers),
-        # then match each driver to the LaunchControl that owns their CarRig.
+        # ── 4. PROCESS CAR 1 immediately (inside this execute) ──
+        _pipeline_index = 0
+        first_car = _pipeline_queue[0]
+        _pipeline_index = 1
+        print(f"\n[F1 Studio] ═══ Processing car 1/{len(_pipeline_queue)}: {first_car['driver']} ═══")
+        _generate_single_car(first_car)
 
-        # Collect all LaunchControl collections in the scene
-        lc_parents = []
-        for coll in scene.collection.children:
-            if 'LaunchControl' in coll.name:
-                lc_parents.append(coll)
-        # Also check deeper nesting just in case
-        for coll in scene.collection.children_recursive:
-            if 'LaunchControl' in coll.name and coll not in lc_parents:
-                lc_parents.append(coll)
+        # ── 5. SCHEDULE remaining cars via bpy.app.timers ──
+        if len(_pipeline_queue) > 1:
+            print(f"[F1 Studio] Scheduling {len(_pipeline_queue)-1} more car(s) via timer...")
+            bpy.app.timers.register(_deferred_process_next_car, first_interval=1.0)
+        else:
+            _pipeline_finish()
 
-        # Debug: dump the full hierarchy
-        print(f"[F1 Studio] Found {len(lc_parents)} LaunchControl collection(s):")
-        for lc in lc_parents:
-            child_names = [c.name for c in lc.children_recursive]
-            print(f"  {lc.name} -> children: {child_names}")
-
-        for i, item in enumerate(scene.f1_lap_queue):
-            # Find the LaunchControl that contains this driver's CarRig
-            search_coll = None
-            coll = None  # the CarRig collection for this driver
-
-            for lc in lc_parents:
-                for child in lc.children_recursive:
-                    if child.name.startswith('CarRig') and item.driver in child.name:
-                        search_coll = lc
-                        coll = child
-                        break
-                if search_coll:
-                    break
-
-            # Fallback: use index-based matching
-            if search_coll is None and i < len(lc_parents):
-                search_coll = lc_parents[i]
-                # Find any CarRig child
-                for child in search_coll.children_recursive:
-                    if child.name.startswith('CarRig'):
-                        coll = child
-                        break
-                if coll is None:
-                    coll = search_coll
-
-            if search_coll is None:
-                self.report({'WARNING'}, f"No LaunchControl found for {item.driver}")
-                continue
-
-            print(f"[F1 Studio] Registering {item.driver} -> {coll.name} (parent: {search_coll.name})")
-
-            rig_obj = None
-            driving_path = None
-            sim_body = None
-            sim_wheels = None
-            sim_track_to = None
-
-            # Search the LaunchControl collection for armature/curve/sim objects
-            print(f"  Searching for objects in: {search_coll.name}")
-
-            for obj in search_coll.all_objects:
-                n = obj.name
-                if obj.type == 'ARMATURE' and rig_obj is None:
-                    rig_obj = obj
-                if obj.type == 'CURVE' and driving_path is None:
-                    driving_path = obj
-                if n.startswith('sim_Body') and sim_body is None:
-                    sim_body = obj
-                if n.startswith('sim_Wheels') and 'initial' not in n.lower() and sim_wheels is None:
-                    sim_wheels = obj
-                if n.startswith('sim_TrackTo') and sim_track_to is None:
-                    sim_track_to = obj
-
-            print(f"  rig={rig_obj.name if rig_obj else 'MISSING'} "
-                  f"curve={driving_path.name if driving_path else 'MISSING'} "
-                  f"sim_body={sim_body.name if sim_body else 'MISSING'} "
-                  f"sim_wheels={sim_wheels.name if sim_wheels else 'MISSING'} "
-                  f"sim_track_to={sim_track_to.name if sim_track_to else 'MISSING'}")
-
-            # The LC collection is the LaunchControl parent, CarRig is the rig sub-collection
-            lc_coll = search_coll
-
-            # Register with LC if not already
-            car = None
-            for c in scene.lc.cars:
-                if c.collection and c.collection.name == coll.name:
-                    car = c
-                    break
-            if car is None:
-                car = scene.lc.add(coll, coll.name)
-
-            car.rig_object = rig_obj
-            car.driving_path = driving_path
-            car.rig_collection = coll
-            car.lc_collection = lc_coll
-            car.sim_body = sim_body
-            car.sim_wheels = sim_wheels
-            car.sim_track_to = sim_track_to
-
-            # Set as active LC car
-            scene.car_collection = coll
-
-            # Apply telemetry JSON
-            json_path = os.path.join(temp_data_dir, f"{item.driver}_hifi_path.json")
-            if os.path.isfile(json_path):
-                result = bpy.ops.object.apply_lap_from_json(filepath=json_path)
-                print(f"[F1 Studio] {item.driver} apply_lap result: {result}")
-            else:
-                self.report({'WARNING'}, f"JSON not found for {item.driver}: {json_path}")
-
-        # STEP 3 - LINK TRACK MESHES INTO EACH CAR'S GROUND DETECTION
-        if track_mesh_objects:
-            self._link_track_to_ground_detection(scene, track_mesh_objects)
-
-        # STEP 4 - AUTO-LOAD SAVED ALIGNMENT FOR THIS TRACK
-        track_id = first_item.event.lower().replace(" ", "_")
+        # Apply saved alignment
+        track_id = _pipeline_first_event.lower().replace(" ", "_")
         self._apply_saved_alignment(context, track_id)
 
-        self.report({'INFO'}, "Scene Generated Successfully")
+        self.report({'INFO'}, "Scene generation started" if len(_pipeline_queue) > 1
+                     else "Scene Generated Successfully")
         return {'FINISHED'}
 
     def _apply_saved_alignment(self, context, track_id):
@@ -1055,19 +1186,40 @@ class OBJECT_OT_f1_add_lap_to_queue(Operator):
             return {'CANCELLED'}
 
         item = scene.f1_lap_queue.add()
-        item.year     = int(props.sel_year)
-        item.event    = props.sel_race
-        item.session  = props.sel_session
-        item.driver   = props.sel_driver
-        item.track_id = props.sel_race.lower().replace(" ", "_")
+        item.year   = int(props.sel_year)
+        item.driver = props.sel_driver
 
-        from ..data.f1_properties import _DRV_BY_RACE
-        race_drivers = _DRV_BY_RACE.get(props.sel_year, {}).get(props.sel_race, [])
-        driver_entry = next((d for d in race_drivers if d['code'] == props.sel_driver), None)
+        if props.sel_event_type == 'TESTING':
+            item.is_testing   = True
+            item.test_number  = int(props.sel_test_number)
+            item.test_session = int(props.sel_test_session)
+            item.event        = f"Pre-Season Test {item.test_number}"
+            item.session      = f"Testing Day {item.test_session}"
+            item.track_id     = f"testing_{item.year}_test{item.test_number}"
+        else:
+            item.is_testing   = False
+            item.event        = props.sel_race
+            item.session      = props.sel_session
+            item.track_id     = props.sel_race.lower().replace(" ", "_")
+
+        # Resolve team name from database
+        from ..data.f1_properties import _DRV_BY_RACE, _DRV_BY_SEASON
+        if item.is_testing:
+            season_drivers = _DRV_BY_SEASON.get(props.sel_year, [])
+            driver_entry = next((d for d in season_drivers if d['code'] == props.sel_driver), None)
+        else:
+            race_drivers = _DRV_BY_RACE.get(props.sel_year, {}).get(props.sel_race, [])
+            driver_entry = next((d for d in race_drivers if d['code'] == props.sel_driver), None)
+            if not driver_entry:
+                season_drivers = _DRV_BY_SEASON.get(props.sel_year, [])
+                driver_entry = next((d for d in season_drivers if d['code'] == props.sel_driver), None)
         item.team = driver_entry['team_raw'] if driver_entry else "Unknown Team"
 
         if len(scene.f1_lap_queue) == 1:
-            props.status_msg = f"Ref: {item.driver} @ {item.event}"
+            if item.is_testing:
+                props.status_msg = f"Ref: {item.driver} @ Test {item.test_number} Day {item.test_session}"
+            else:
+                props.status_msg = f"Ref: {item.driver} @ {item.event}"
 
         return {'FINISHED'}
 

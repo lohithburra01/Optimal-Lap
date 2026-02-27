@@ -187,9 +187,15 @@ def generate_telemetry_csv(year, gp, session_type, drivers, settings):
     print(f"Generating Telemetry CSVs for {drivers}...")
     fps = settings.get('fps', 24)
     output_dir = settings.get('output_dir', os.path.join(os.path.expanduser("~"), "Downloads"))
-    
+
+    is_testing = settings.get('is_testing', False)
     try:
-        session = fastf1.get_session(year, gp, session_type)
+        if is_testing:
+            test_number  = settings.get('test_number', 1)
+            test_session = settings.get('test_session', 1)
+            session = fastf1.get_testing_session(year, test_number, test_session)
+        else:
+            session = fastf1.get_session(year, gp, session_type)
         session.load(telemetry=True, laps=True, weather=False, messages=False)
     except Exception as e:
         print(f"CSV Export Error: {e}")
@@ -536,12 +542,23 @@ def generate_multirail_data(year, gp, session_type, drivers, settings):
     if not os.path.exists(cache_dir): os.makedirs(cache_dir)
     fastf1.Cache.enable_cache(cache_dir)
 
-    print(f"Loading {year} {gp}...")
-    try:
-        session = fastf1.get_session(year, gp, session_type)
-        session.load(telemetry=True, laps=True, weather=False, messages=False)
-    except Exception as e:
-        return f"FastF1 Error: {e}", {}
+    is_testing = settings.get('is_testing', False)
+    if is_testing:
+        test_number  = settings.get('test_number', 1)
+        test_session = settings.get('test_session', 1)
+        print(f"Loading {year} Testing – Test {test_number}, Day {test_session}...")
+        try:
+            session = fastf1.get_testing_session(year, test_number, test_session)
+            session.load(telemetry=True, laps=True, weather=False, messages=False)
+        except Exception as e:
+            return f"FastF1 Testing Error: {e}", {}
+    else:
+        print(f"Loading {year} {gp}...")
+        try:
+            session = fastf1.get_session(year, gp, session_type)
+            session.load(telemetry=True, laps=True, weather=False, messages=False)
+        except Exception as e:
+            return f"FastF1 Error: {e}", {}
     
     ref_driver = drivers[0]
     ref_data = get_clean_trace(session, ref_driver)

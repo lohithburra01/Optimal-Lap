@@ -71,10 +71,14 @@ def _race_items(self, context):
 
 def _driver_items(self, context):
     year = self.sel_year
-    race = self.sel_race
-    drivers = _DRV_BY_RACE.get(year, {}).get(race, [])
-    if not drivers:
+    # For testing sessions, always use the season-level driver list
+    if getattr(self, 'sel_event_type', 'RACE') == 'TESTING':
         drivers = _DRV_BY_SEASON.get(year, [])
+    else:
+        race = self.sel_race
+        drivers = _DRV_BY_RACE.get(year, {}).get(race, [])
+        if not drivers:
+            drivers = _DRV_BY_SEASON.get(year, [])
     if not drivers:
         return [('NONE', 'No drivers – check database', '')]
 
@@ -114,16 +118,29 @@ def _on_race_changed(self, context):
 
 class F1_Lap_Item(bpy.types.PropertyGroup):
     """One entry in the lap queue."""
-    year:     IntProperty(name="Year",     default=2024)
-    event:    StringProperty(name="Event",   default="Bahrain Grand Prix")
-    session:  StringProperty(name="Session", default="Race")
-    driver:   StringProperty(name="Driver",  default="VER")
-    team:     StringProperty(name="Team",    default="Red Bull Racing")
-    track_id: StringProperty(name="Track ID", default="bahrain_grand_prix")
+    year:         IntProperty(name="Year",     default=2024)
+    event:        StringProperty(name="Event",   default="Bahrain Grand Prix")
+    session:      StringProperty(name="Session", default="Race")
+    driver:       StringProperty(name="Driver",  default="VER")
+    team:         StringProperty(name="Team",    default="Red Bull Racing")
+    track_id:     StringProperty(name="Track ID", default="bahrain_grand_prix")
+    is_testing:   BoolProperty(name="Is Testing", default=False)
+    test_number:  IntProperty(name="Test Number", default=1)
+    test_session: IntProperty(name="Test Session", default=1)
 
 
 class F1_Pipeline_Props(bpy.types.PropertyGroup):
     """All UI selection properties for the F1 Studio panel."""
+
+    sel_event_type: EnumProperty(
+        name="Event Type",
+        description="Choose between a race weekend or a testing session",
+        items=[
+            ('RACE',    'Race Weekend', 'Standard Grand Prix weekend'),
+            ('TESTING', 'Testing',      'Pre-season or in-season testing'),
+        ],
+        default='RACE',
+    )
 
     sel_year: EnumProperty(
         name="Season",
@@ -151,6 +168,27 @@ class F1_Pipeline_Props(bpy.types.PropertyGroup):
             ('Race',        'Race',       ''),
         ],
         default='Race',
+    )
+
+    sel_test_number: EnumProperty(
+        name="Test Event",
+        description="Select which testing event (pre-season, in-season, etc.)",
+        items=[
+            ('1', 'Test 1 (Pre-Season)', 'First testing event of the year'),
+            ('2', 'Test 2',              'Second testing event (if applicable)'),
+        ],
+        default='1',
+    )
+
+    sel_test_session: EnumProperty(
+        name="Test Day",
+        description="Select the day/session within the testing event",
+        items=[
+            ('1', 'Day 1', 'First day of testing'),
+            ('2', 'Day 2', 'Second day of testing'),
+            ('3', 'Day 3', 'Third day of testing'),
+        ],
+        default='1',
     )
 
     sel_driver: EnumProperty(

@@ -42,9 +42,16 @@ class PANEL_PT_F1_Studio(bpy.types.Panel):
         box = layout.box()
         box.label(text="Query Engine", icon='WORLD_DATA')
         col = box.column(align=True)
+        col.prop(props, "sel_event_type")
         col.prop(props, "sel_year")
-        col.prop(props, "sel_race")
-        col.prop(props, "sel_session")
+
+        if props.sel_event_type == 'TESTING':
+            col.prop(props, "sel_test_number")
+            col.prop(props, "sel_test_session")
+        else:
+            col.prop(props, "sel_race")
+            col.prop(props, "sel_session")
+
         col.prop(props, "sel_driver")
 
         row = box.row()
@@ -62,7 +69,10 @@ class PANEL_PT_F1_Studio(bpy.types.Panel):
         if len(scene.f1_lap_queue) > 0:
             for i, item in enumerate(scene.f1_lap_queue):
                 row = box.row()
-                row.label(text=f"{i+1}. {item.driver}  |  {item.year}  |  {item.event}")
+                if item.is_testing:
+                    row.label(text=f"{i+1}. {item.driver}  |  {item.year}  |  Test {item.test_number} Day {item.test_session}")
+                else:
+                    row.label(text=f"{i+1}. {item.driver}  |  {item.year}  |  {item.event}")
                 op = row.operator(OBJECT_OT_f1_remove_lap.bl_idname, text="", icon='X')
                 op.index = i
         else:

@@ -52,13 +52,25 @@ def generate_variable_paths(year, gp, session_type, drivers, settings):
     if not os.path.exists(cache_dir): os.makedirs(cache_dir)
     fastf1.Cache.enable_cache(cache_dir)
 
-    print(f"Fetching {session_type} for {year} {gp}...")
-    try:
-        session = fastf1.get_session(year, gp, session_type)
-        session.load(telemetry=True, laps=True, weather=False, messages=False)
-    except Exception as e:
-        print(f"FastF1 Load Error: {e}")
-        return None
+    is_testing = settings.get('is_testing', False)
+    if is_testing:
+        test_number  = settings.get('test_number', 1)
+        test_session = settings.get('test_session', 1)
+        print(f"Fetching Testing for {year} – Test {test_number}, Day {test_session}...")
+        try:
+            session = fastf1.get_testing_session(year, test_number, test_session)
+            session.load(telemetry=True, laps=True, weather=False, messages=False)
+        except Exception as e:
+            print(f"FastF1 Testing Load Error: {e}")
+            return None
+    else:
+        print(f"Fetching {session_type} for {year} {gp}...")
+        try:
+            session = fastf1.get_session(year, gp, session_type)
+            session.load(telemetry=True, laps=True, weather=False, messages=False)
+        except Exception as e:
+            print(f"FastF1 Load Error: {e}")
+            return None
 
     ref_driver_name = drivers[0] # First driver is reference
     
