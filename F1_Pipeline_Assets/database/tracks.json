@@ -292,7 +292,17 @@
     "versions": [],
     "alignment": {
       "offset_x": 150.87,
-      "offset_y": -294.8,
+      "offset_y": -300.42,
+      "rotation": -1.529432,
+      "scale": 1.0
+    }
+  },
+"pre-season_test_1": {
+    "track_name": "Bahrain Grand Prix",
+    "versions": [],
+    "alignment": {
+      "offset_x": 150.87,
+      "offset_y": -300.42,
       "rotation": -1.529432,
       "scale": 1.0
     }

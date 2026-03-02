@@ -38,6 +38,11 @@ class PANEL_PT_F1_Studio(bpy.types.Panel):
                          icon='PREFERENCES', text="Install Dependencies")
             return
 
+        # When deps are present, show upgrade option (e.g. 3.7 → 3.8.1)
+        row = layout.row()
+        row.operator(F1_OT_InstallDeps.bl_idname,
+                     icon='IMPORT', text="Upgrade / Reinstall FastF1 (3.8.1+)")
+
         # ── 2. QUERY ENGINE ──────────────────────────────────────────────
         box = layout.box()
         box.label(text="Query Engine", icon='WORLD_DATA')
@@ -58,6 +63,7 @@ class PANEL_PT_F1_Studio(bpy.types.Panel):
         row.scale_y = 1.2
         row.operator(OBJECT_OT_f1_add_lap_to_queue.bl_idname,
                      icon='ADD', text="ADD LAP")
+        box.label(text="Data: 30-120 min after session ends; future sessions = no data", icon='INFO')
 
         # ── 3. LAP QUEUE ─────────────────────────────────────────────────
         layout.separator()
@@ -70,7 +76,19 @@ class PANEL_PT_F1_Studio(bpy.types.Panel):
             for i, item in enumerate(scene.f1_lap_queue):
                 row = box.row()
                 if item.is_testing:
-                    row.label(text=f"{i+1}. {item.driver}  |  {item.year}  |  Test {item.test_number} Day {item.test_session}")
+                    # Look up track name from testing_events database
+                    from ..data.f1_properties import _TESTING_EVENTS
+                    _tests = _TESTING_EVENTS.get(item.year, [])
+                    _loc = ""
+                    for _t in _tests:
+                        if str(_t.get('test_number', '')) == str(item.test_number):
+                            _loc = _t.get('location', '')
+                            break
+                    _label = f"Test {item.test_number}"
+                    if _loc:
+                        _label += f" – {_loc}"
+                    _label += f" Day {item.test_session}"
+                    row.label(text=f"{i+1}. {item.driver}  |  {item.year}  |  {_label}")
                 else:
                     row.label(text=f"{i+1}. {item.driver}  |  {item.year}  |  {item.event}")
                 op = row.operator(OBJECT_OT_f1_remove_lap.bl_idname, text="", icon='X')

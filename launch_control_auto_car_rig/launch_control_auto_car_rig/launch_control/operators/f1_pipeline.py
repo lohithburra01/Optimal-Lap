@@ -235,7 +235,10 @@ def _generate_single_car(item):
     scene.car_collection = car_coll          # make LC's find_selected() return THIS car
 
     # --- 4. APPLY TELEMETRY JSON ---
-    json_path = os.path.join(_pipeline_temp_dir, f"{item['driver']}_hifi_path.json")
+    slot_id = item.get("slot_id", 0)
+    json_path = os.path.join(_pipeline_temp_dir, f"{item['driver']}_{slot_id}_hifi_path.json")
+    if not os.path.isfile(json_path):
+        json_path = os.path.join(_pipeline_temp_dir, f"{item['driver']}_hifi_path.json")
     if os.path.isfile(json_path):
         result = bpy.ops.object.apply_lap_from_json(filepath=json_path)
         print(f"[F1 Studio] {item['driver']} apply_lap result: {result}")
@@ -309,7 +312,7 @@ class OBJECT_OT_f1_generate_scene(Operator):
 
         # ── 2. GENERATE TELEMETRY for ALL drivers upfront ──
         batches = {}
-        for item in queue:
+        for idx, item in enumerate(queue):
             if item.is_testing:
                 key = (item.year, item.event, item.session,
                        True, item.test_number, item.test_session)
@@ -318,16 +321,19 @@ class OBJECT_OT_f1_generate_scene(Operator):
                        False, 0, 0)
             if key not in batches:
                 batches[key] = []
-            batches[key].append(item.driver)
+            batches[key].append((item.driver, idx))
 
         _pipeline_temp_dir = db.get_temp_dir()
 
         props = scene.f1_pipeline_props
-        for (year, event, session, is_testing, test_num, test_sess), drivers in batches.items():
+        for (year, event, session, is_testing, test_num, test_sess), driver_slots in batches.items():
+            drivers = [x[0] for x in driver_slots]
+            slot_ids = [x[1] for x in driver_slots]
             settings = {
                 'resolution': 0.5, 'width': 6.0, 'lookahead': 70,
                 'output_dir': _pipeline_temp_dir,
                 'render_minimap': props.render_minimap,
+                'slot_ids': slot_ids,
             }
             if is_testing:
                 settings['is_testing']    = True
@@ -341,10 +347,14 @@ class OBJECT_OT_f1_generate_scene(Operator):
             msg, _map, _lt = F1_HiFi_Baker_Pro.generate_multirail_data(
                 year, event, session, drivers, settings)
             print(f"Baker: {msg}")
+            if _lt is None or msg.startswith("Error") or msg.startswith("FastF1"):
+                self.report({'ERROR'}, msg[:200] if len(msg) > 200 else msg)
+                scene.f1_pipeline_props.status_msg = "FastF1: no data"
+                return {'CANCELLED'}
 
         # ── 3. SNAPSHOT the queue and clear it ──
         _pipeline_queue = []
-        for item in queue:
+        for idx, item in enumerate(queue):
             _pipeline_queue.append({
                 'year': item.year, 'event': item.event,
                 'session': item.session, 'driver': item.driver,
@@ -352,6 +362,7 @@ class OBJECT_OT_f1_generate_scene(Operator):
                 'is_testing': item.is_testing,
                 'test_number': item.test_number,
                 'test_session': item.test_session,
+                'slot_id': idx,
             })
 
         _pipeline_original_edit_all = scene.settings.edit_all_mode

@@ -54,8 +54,9 @@ def generate_variable_paths(year, gp, session_type, drivers, settings):
 
     is_testing = settings.get('is_testing', False)
     if is_testing:
-        test_number  = settings.get('test_number', 1)
-        test_session = settings.get('test_session', 1)
+        # API: get_testing_session(year, test_number, day) e.g. (2026, 1, 2) = Test 1 Day 2
+        test_number = int(settings.get('test_number', 1))
+        test_session = int(settings.get('test_session', 1))
         print(f"Fetching Testing for {year} – Test {test_number}, Day {test_session}...")
         try:
             session = fastf1.get_testing_session(year, test_number, test_session)

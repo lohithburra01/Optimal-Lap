@@ -8,9 +8,10 @@ from bpy.props import (StringProperty, IntProperty, EnumProperty,
 
 # ── DATABASE LOADER ──────────────────────────────────────────────────────────
 
-_CALENDAR      = {}
-_DRV_BY_RACE   = {}
-_DRV_BY_SEASON = {}
+_CALENDAR        = {}
+_DRV_BY_RACE     = {}
+_DRV_BY_SEASON   = {}
+_TESTING_EVENTS  = {}
 
 def _get_db_root():
     """Resolve path to F1_Pipeline_Assets/database relative to the open .blend file."""
@@ -28,22 +29,46 @@ def _get_db_root():
     return os.path.join(root, "F1_Pipeline_Assets", "database")
 
 def load_databases():
-    global _CALENDAR, _DRV_BY_RACE, _DRV_BY_SEASON
+    global _CALENDAR, _DRV_BY_RACE, _DRV_BY_SEASON, _TESTING_EVENTS
     db_dir = _get_db_root()
-    try:
-        if os.path.exists(os.path.join(db_dir, "calendar_cache.json")):
-            with open(os.path.join(db_dir, "calendar_cache.json"),    encoding='utf-8') as f:
+    if not os.path.isdir(db_dir):
+        print(f"[F1 Studio] Database dir not found: {db_dir}")
+        return
+    # Load each file independently so missing drivers/calendar don't break the rest
+    cal_path = os.path.join(db_dir, "calendar_cache.json")
+    if os.path.exists(cal_path):
+        try:
+            with open(cal_path, encoding='utf-8') as f:
                 _CALENDAR = json.load(f)
-            with open(os.path.join(db_dir, "drivers_by_race.json"),   encoding='utf-8') as f:
-                _DRV_BY_RACE = json.load(f)
-            with open(os.path.join(db_dir, "drivers_by_season.json"), encoding='utf-8') as f:
-                _DRV_BY_SEASON = json.load(f)
-            print(f"[F1 Studio] Databases loaded. Years: {sorted(_CALENDAR.keys())}")
-        else:
-            print(f"[F1 Studio] Database files not found in: {db_dir}")
-    except Exception as e:
-        print(f"[F1 Studio] WARNING – Could not load databases: {e}")
-        print(f"[F1 Studio] Looked in: {db_dir}")
+            print(f"[F1 Studio] Calendar loaded. Years: {sorted(_CALENDAR.keys())}")
+        except Exception as e:
+            print(f"[F1 Studio] WARNING – Could not load calendar: {e}")
+    else:
+        print(f"[F1 Studio] No calendar_cache.json in {db_dir}")
+
+    for name, key in [
+        ("drivers_by_race.json", "_DRV_BY_RACE"),
+        ("drivers_by_season.json", "_DRV_BY_SEASON"),
+    ]:
+        path = os.path.join(db_dir, name)
+        if os.path.exists(path):
+            try:
+                with open(path, encoding='utf-8') as f:
+                    data = json.load(f)
+                if key == "_DRV_BY_RACE":
+                    _DRV_BY_RACE = data
+                else:
+                    _DRV_BY_SEASON = data
+            except Exception as e:
+                print(f"[F1 Studio] WARNING – Could not load {name}: {e}")
+    # Testing events (optional)
+    test_path = os.path.join(db_dir, "testing_events.json")
+    if os.path.exists(test_path):
+        try:
+            with open(test_path, encoding='utf-8') as f:
+                _TESTING_EVENTS = json.load(f)
+        except Exception as e:
+            print(f"[F1 Studio] WARNING – Could not load testing_events: {e}")
 
 # Removed global load_databases() call to avoid _RestrictData error on import
 
@@ -66,6 +91,26 @@ def _race_items(self, context):
          e['event_name'],
          f"Round {e['round']}  |  {e.get('location','')}  {e.get('country','')}")
         for e in events
+    ]
+
+
+def _test_event_items(self, context):
+    """Dynamic items for the testing event dropdown. Use event_name + location with ASCII only so UI shows correct name (no gibberish)."""
+    year = self.sel_year
+    tests = _TESTING_EVENTS.get(year, [])
+    if tests:
+        return [
+            (
+                str(t["test_number"]),
+                f"Test {t['test_number']}: {t.get('event_name', '')} - {t.get('location', '?')}".replace("\u2013", "-").strip(),
+                f"{t.get('event_name', '')}  |  {t.get('country', '')}",
+            )
+            for t in tests
+        ]
+    # Fallback when testing_events.json not populated for this year
+    return [
+        ('1', 'Test 1 (Pre-Season)', 'First testing event of the year'),
+        ('2', 'Test 2',              'Second testing event (if applicable)'),
     ]
 
 
@@ -173,11 +218,7 @@ class F1_Pipeline_Props(bpy.types.PropertyGroup):
     sel_test_number: EnumProperty(
         name="Test Event",
         description="Select which testing event (pre-season, in-season, etc.)",
-        items=[
-            ('1', 'Test 1 (Pre-Season)', 'First testing event of the year'),
-            ('2', 'Test 2',              'Second testing event (if applicable)'),
-        ],
-        default='1',
+        items=_test_event_items,
     )
 
     sel_test_session: EnumProperty(

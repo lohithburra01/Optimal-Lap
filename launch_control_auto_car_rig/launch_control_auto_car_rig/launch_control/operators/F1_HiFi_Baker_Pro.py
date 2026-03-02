@@ -4,10 +4,23 @@ import sys
 import subprocess
 import os
 import json
-import numpy as np
-import tempfile
 import warnings
 import importlib.util
+
+# Add Blender's F1 Studio modules path first so we don't overwrite/lock files in scripts/modules
+def _get_f1_modules_path():
+    scripts = bpy.utils.user_resource("SCRIPTS")
+    if scripts:
+        p = os.path.join(scripts, "f1_studio_modules")
+        return p
+    return None
+
+_f1_mod_path = _get_f1_modules_path()
+if _f1_mod_path and os.path.isdir(_f1_mod_path) and _f1_mod_path not in sys.path:
+    sys.path.insert(0, _f1_mod_path)
+
+import numpy as np
+import tempfile
 
 # ==============================================================================
 # 1. DEPENDENCY HANDLING (SAFE MODE)
@@ -42,28 +55,34 @@ class F1_OT_InstallDeps(bpy.types.Operator):
     bl_description = "Installs fastf1, pandas, and scipy. Blender may freeze for 30s."
 
     def execute(self, context):
-        p = os.path.join(bpy.utils.user_resource("SCRIPTS"), "modules")
-        if not os.path.exists(p): os.makedirs(p)
-        
+        # Install to a dedicated folder to avoid PermissionError when overwriting locked .pyd in scripts/modules
+        p = _get_f1_modules_path()
+        if not p:
+            self.report({'ERROR'}, "Could not resolve Blender scripts path.")
+            return {'CANCELLED'}
+        os.makedirs(p, exist_ok=True)
+
         import ensurepip
         ensurepip.bootstrap()
-        
-        deps = ["fastf1", "pandas", "scipy", "numpy", "requests", "timple", "requests-cache"]
+
+        deps = ["fastf1>=3.8.1", "pandas", "scipy", "numpy", "requests", "timple", "requests-cache"]
         try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", *deps, "--target", p])
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", *deps, "--target", p])
+            if p not in sys.path:
+                sys.path.insert(0, p)
             global MISSING_DEPS
             importlib.invalidate_caches()
             MISSING_DEPS = check_dependencies()
-            
+
             if not MISSING_DEPS:
                 global fastf1, pd, interp1d, splprep, splev, correlate, medfilt
                 import fastf1
                 import pandas as pd
                 from scipy.interpolate import interp1d, splprep, splev
                 from scipy.signal import correlate, medfilt
-                self.report({'INFO'}, "Installation Complete! Restart advised.")
+                self.report({'INFO'}, "Installation Complete! Restart Blender to use FastF1 3.8.1.")
             else:
-                self.report({'WARNING'}, "Installation finished but modules missing.")
+                self.report({'WARNING'}, "Installation finished but modules missing. Restart Blender.")
         except Exception as e:
             self.report({'ERROR'}, f"Installation Failed: {e}")
             return {'CANCELLED'}
@@ -191,8 +210,9 @@ def generate_telemetry_csv(year, gp, session_type, drivers, settings):
     is_testing = settings.get('is_testing', False)
     try:
         if is_testing:
-            test_number  = settings.get('test_number', 1)
-            test_session = settings.get('test_session', 1)
+            # API: get_testing_session(year, test_number, day) e.g. (2026, 1, 2) = Test 1 Day 2
+            test_number = int(settings.get('test_number', 1))
+            test_session = int(settings.get('test_session', 1))
             session = fastf1.get_testing_session(year, test_number, test_session)
         else:
             session = fastf1.get_session(year, gp, session_type)
@@ -527,7 +547,8 @@ def generate_minimap_frames(session, drivers, output_dir, ref_driver, year, even
 # 4. MULTI-RAIL GENERATOR (ANALYTICAL DERIVATIVES)
 # ==============================================================================
 def generate_multirail_data(year, gp, session_type, drivers, settings):
-    if MISSING_DEPS: return "Error: Missing Deps", {}
+    if MISSING_DEPS:
+        return "Error: Missing Deps", {}, None
 
     # Define temp data path
     # Using the local project folder's temp_data if accessible, or system temp
@@ -544,25 +565,29 @@ def generate_multirail_data(year, gp, session_type, drivers, settings):
 
     is_testing = settings.get('is_testing', False)
     if is_testing:
-        test_number  = settings.get('test_number', 1)
-        test_session = settings.get('test_session', 1)
+        # API: get_testing_session(year, test_number, day) — e.g. (2026, 1, 2) = Test 1 Day 2, (2026, 2, 1) = Test 2 Day 1
+        test_number = int(settings.get('test_number', 1))
+        test_session = int(settings.get('test_session', 1))
         print(f"Loading {year} Testing – Test {test_number}, Day {test_session}...")
         try:
             session = fastf1.get_testing_session(year, test_number, test_session)
             session.load(telemetry=True, laps=True, weather=False, messages=False)
         except Exception as e:
-            return f"FastF1 Testing Error: {e}", {}
+            hint = " Data is only available after the session has finished (often 30-120 min). Future/unrun sessions have no data yet."
+            return f"FastF1 Testing Error: {e}.{hint}", {}, None
     else:
         print(f"Loading {year} {gp}...")
         try:
             session = fastf1.get_session(year, gp, session_type)
             session.load(telemetry=True, laps=True, weather=False, messages=False)
         except Exception as e:
-            return f"FastF1 Error: {e}", {}
-    
+            hint = " Data is only available after the session has finished (often 30-120 min). Check event/session name."
+            return f"FastF1 Error: {e}.{hint}", {}, None
+
     ref_driver = drivers[0]
     ref_data = get_clean_trace(session, ref_driver)
-    if not ref_data: return "Error: No Ref Data", {}
+    if not ref_data:
+        return "Error: No Ref Data (no telemetry for selected driver/session).", {}, None
 
     ref_data['time'] -= ref_data['time'][0]
 
@@ -711,7 +736,11 @@ def generate_multirail_data(year, gp, session_type, drivers, settings):
             "launch_control": {"speed_unit": "m/s", "source": "Hi-Fi Baker"}
         }
 
-        fname = os.path.join(output_dir, f"{d}_hifi_path.json")
+        slot_ids = settings.get("slot_ids")
+        if slot_ids is not None and d_idx < len(slot_ids) and slot_ids[d_idx] is not None:
+            fname = os.path.join(output_dir, f"{d}_{slot_ids[d_idx]}_hifi_path.json")
+        else:
+            fname = os.path.join(output_dir, f"{d}_hifi_path.json")
         with open(fname, 'w') as f: json.dump(json_data, f, indent=2)
 
     

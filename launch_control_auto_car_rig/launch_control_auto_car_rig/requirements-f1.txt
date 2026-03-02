@@ -1,0 +1,9 @@
+# F1 Studio / Hi-Fi Baker dependencies (install into Blender's scripts/modules or your env)
+# FastF1 3.8.1+ required for get_testing_session(year, test_number, day) and latest data
+fastf1>=3.8.1
+pandas
+scipy
+numpy
+requests
+timple
+requests-cache
