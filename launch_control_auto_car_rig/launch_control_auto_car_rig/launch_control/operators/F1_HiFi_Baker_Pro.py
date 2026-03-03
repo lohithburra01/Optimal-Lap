@@ -373,7 +373,18 @@ def generate_minimap_frames(session, drivers, output_dir, ref_driver, year, even
                     
                     # Assuming strict match logic for now based on instruction "Find the entry matching year and event name"
                     if event in full_db[year_str]:
-                        race_drivers_db = full_db[year_str][event]
+                        event_data = full_db[year_str][event]
+                        # Handle both old flat list and new per-session dict format
+                        if isinstance(event_data, list):
+                            race_drivers_db = event_data
+                        elif isinstance(event_data, dict):
+                            race_drivers_db = event_data.get('_all', [])
+                            if not race_drivers_db:
+                                # fallback: flatten all session lists
+                                for v in event_data.values():
+                                    if isinstance(v, list) and v and isinstance(v[0], dict):
+                                        race_drivers_db = v
+                                        break
                     else:
                         print(f"Event '{event}' not found in database for {year_str}.")
         except Exception as e:

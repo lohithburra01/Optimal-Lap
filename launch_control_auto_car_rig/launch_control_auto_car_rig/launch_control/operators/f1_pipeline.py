@@ -176,7 +176,10 @@ class OBJECT_OT_f1_generate_scene(Operator):
             # Apply telemetry JSON
             json_path = os.path.join(temp_data_dir, f"{item.driver}_hifi_path.json")
             if os.path.isfile(json_path):
-                result = bpy.ops.object.apply_lap_from_json(filepath=json_path)
+                result = bpy.ops.object.apply_lap_from_json(
+                    filepath=json_path,
+                    curve_name=f"LC_LapPath_{item.driver}",
+                )
                 print(f"[F1 Studio] {item.driver} apply_lap result: {result}")
             else:
                 self.report({'WARNING'}, f"JSON not found for {item.driver}: {json_path}")
@@ -238,20 +241,49 @@ class OBJECT_OT_f1_add_lap_to_queue(Operator):
             self.report({'WARNING'}, "Queue is full (Max 4)")
             return {'CANCELLED'}
 
-        item = scene.f1_lap_queue.add()
-        item.year     = int(props.sel_year)
-        item.event    = props.sel_race
-        item.session  = props.sel_session
-        item.driver   = props.sel_driver
-        item.track_id = props.sel_race.lower().replace(" ", "_")
+        from ..data.f1_properties import _DRV_BY_RACE, _get_event
 
-        from ..data.f1_properties import _DRV_BY_RACE
-        race_drivers = _DRV_BY_RACE.get(props.sel_year, {}).get(props.sel_race, [])
+        # Resolve team from driver list
+        session   = props.sel_session
+        q_segment = props.sel_q_segment if session == 'Q' else ''
+        year_str  = props.sel_year
+
+        event_data = _DRV_BY_RACE.get(year_str, {}).get(props.sel_race)
+        race_drivers = []
+        if isinstance(event_data, list):
+            race_drivers = event_data
+        elif isinstance(event_data, dict):
+            if session == 'Q':
+                q_data = event_data.get('Q', {})
+                seg_key = q_segment if q_segment and q_segment != 'Q_ALL' else '_all'
+                race_drivers = q_data.get(seg_key, event_data.get('_all', []))
+            elif session in ('Day 1', 'Day 2', 'Day 3'):
+                race_drivers = event_data.get(session, [])
+            else:
+                race_drivers = event_data.get(session, event_data.get('_all', []))
+
         driver_entry = next((d for d in race_drivers if d['code'] == props.sel_driver), None)
-        item.team = driver_entry['team_raw'] if driver_entry else "Unknown Team"
 
+        # Get track_key from calendar
+        event = _get_event(year_str, props.sel_race)
+        track_key = event.get('track_key', props.sel_race.lower().replace(' ', '_')) if event else props.sel_race.lower().replace(' ', '_')
+
+        # Add to queue
+        item = scene.f1_lap_queue.add()
+        item.year        = int(props.sel_year)
+        item.event       = props.sel_race
+        item.session     = session
+        item.q_segment   = q_segment if session == 'Q' else ''
+        item.driver      = props.sel_driver
+        item.team        = driver_entry['team_raw'] if driver_entry else "Unknown Team"
+        item.track_id    = track_key
+        item.fastest_lap = props.fastest_lap
+
+        # Lock track after first lap
         if len(scene.f1_lap_queue) == 1:
-            props.status_msg = f"Ref: {item.driver} @ {item.event}"
+            props.locked_track     = props.sel_race
+            props.locked_track_key = track_key
+            props.status_msg       = f"Ref: {item.driver} @ {item.event}"
 
         return {'FINISHED'}
 
@@ -272,8 +304,12 @@ class OBJECT_OT_f1_clear_queue(Operator):
     bl_label = "Clear Queue"
 
     def execute(self, context):
-        context.scene.f1_lap_queue.clear()
-        context.scene.f1_pipeline_props.status_msg = "Ready"
+        scene = context.scene
+        scene.f1_lap_queue.clear()
+        props = scene.f1_pipeline_props
+        props.locked_track     = ""
+        props.locked_track_key = ""
+        props.status_msg       = "Ready"
         return {'FINISHED'}
 
 

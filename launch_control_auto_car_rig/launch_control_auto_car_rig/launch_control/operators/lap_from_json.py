@@ -104,7 +104,8 @@ class OBJECT_OT_apply_lap_from_json(bpy.types.Operator):
     bl_idname = "object.apply_lap_from_json"
     bl_description = "Load path + speed from a JSON file, create path, assign as User Path, and bake F1 speed"
 
-    filepath: bpy.props.StringProperty(subtype="FILE_PATH", options={"SKIP_SAVE", "HIDDEN"})
+    filepath:   bpy.props.StringProperty(subtype="FILE_PATH", options={"SKIP_SAVE", "HIDDEN"})
+    curve_name: bpy.props.StringProperty(default="", options={"SKIP_SAVE", "HIDDEN"})
 
     def invoke(self, context, event):
         context.window_manager.fileselect_add(self)
@@ -146,7 +147,8 @@ class OBJECT_OT_apply_lap_from_json(bpy.types.Operator):
         closed = data.get("closed", False) # Default to false for F1 segments often? Or True for laps.
 
         # 1. Create Curve (AUTO handles)
-        curve_obj = _create_curve_from_points(points, closed)
+        name = self.curve_name if self.curve_name else LAP_CURVE_NAME
+        curve_obj = _create_curve_from_points(points, closed, name=name)
         
         # 2. Assign to Car
         props = active_car.properties
