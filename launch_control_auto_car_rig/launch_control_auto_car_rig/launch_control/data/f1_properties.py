@@ -262,6 +262,7 @@ class F1_Lap_Item(bpy.types.PropertyGroup):
     team:       StringProperty(name="Team",    default="Unknown")
     track_id:   StringProperty(name="Track ID",default="bahrain")
     fastest_lap: BoolProperty(name="Fastest Lap", default=True)
+    compound:    StringProperty(name="Compound",   default="UNKNOWN")
 
 
 class F1_Pipeline_Props(bpy.types.PropertyGroup):

@@ -216,6 +216,7 @@ def generate_telemetry_csv(year, gp, session_type, drivers, settings):
                 'rpm': tel['RPM'].values,
                 'drs': tel['DRS'].values,
                 'lap_time': lap['LapTime'].total_seconds(),
+                'compound': str(lap.get('Compound', 'UNKNOWN')),
                 'driver': drv
             }
         except: return None
@@ -290,28 +291,35 @@ def generate_telemetry_csv(year, gp, session_type, drivers, settings):
         drv_dists = f_dist_at_time(drv_frame_times)
         
         # Sample Raw Telemetry at these distances
-        f_spd = interp1d(drv_data['dist'], drv_data['speed'], fill_value="extrapolate")
-        f_thr = interp1d(drv_data['dist'], drv_data['throttle'], fill_value="extrapolate")
-        f_brk = interp1d(drv_data['dist'], drv_data['brake'], fill_value="extrapolate")
-        f_rpm = interp1d(drv_data['dist'], drv_data['rpm'], fill_value="extrapolate")
-        f_gear = interp1d(drv_data['dist'], drv_data['gear'], kind='nearest', fill_value="extrapolate")
-        f_drs = interp1d(drv_data['dist'], drv_data['drs'], kind='nearest', fill_value="extrapolate")
-        
+        f_spd    = interp1d(drv_data['dist'], drv_data['speed'],    fill_value="extrapolate")
+        f_thr    = interp1d(drv_data['dist'], drv_data['throttle'], fill_value="extrapolate")
+        f_brk    = interp1d(drv_data['dist'], drv_data['brake'],    fill_value="extrapolate")
+        f_rpm    = interp1d(drv_data['dist'], drv_data['rpm'],      fill_value="extrapolate")
+        f_gear   = interp1d(drv_data['dist'], drv_data['gear'],   kind='nearest', fill_value="extrapolate")
+        f_drs    = interp1d(drv_data['dist'], drv_data['drs'],    kind='nearest', fill_value="extrapolate")
+        f_time_s = interp1d(drv_data['dist'], drv_data['time'],     fill_value="extrapolate")
+
         raw_drs = f_drs(drv_dists)
         # Map DRS: 0-7->0, 8-9->1 (Detected), 10+->2 (Active)
         ers_deploy = np.zeros_like(raw_drs, dtype=int)
         ers_deploy[raw_drs >= 8] = 1
         ers_deploy[raw_drs >= 10] = 2
-        
+
+        # time_s: seconds from lap start, normalised so first sample = 0
+        raw_time_s = f_time_s(drv_dists)
+        time_s = np.round(raw_time_s - raw_time_s[0], 4)
+
         df_out = pd.DataFrame({
-            'frame': drv_frames,
-            'distance': np.round(drv_dists, 2),
-            'speed': np.round(f_spd(drv_dists), 1),
-            'throttle': np.round(f_thr(drv_dists), 1),
-            'brake': np.round(f_brk(drv_dists), 1),
-            'gear': np.round(f_gear(drv_dists)).astype(int),
-            'rpm': np.round(f_rpm(drv_dists)).astype(int),
-            'ers_deploy': ers_deploy
+            'frame':      drv_frames,
+            'time_s':     time_s,
+            'distance':   np.round(drv_dists, 2),
+            'speed':      np.round(f_spd(drv_dists), 1),
+            'throttle':   np.round(f_thr(drv_dists), 1),
+            'brake':      np.round(f_brk(drv_dists), 1),
+            'gear':       np.round(f_gear(drv_dists)).astype(int),
+            'rpm':        np.round(f_rpm(drv_dists)).astype(int),
+            'ers_deploy': ers_deploy,
+            'compound':   drv_data.get('compound', 'UNKNOWN'),
         })
         
         fname = os.path.join(output_dir, f"{drv}_telemetry.csv")
@@ -716,6 +724,34 @@ def generate_multirail_data(year, gp, session_type, drivers, settings):
 
     # CALL MINIMAP GENERATOR
     generate_minimap_frames(session, drivers, output_dir, ref_driver, year, gp)
+
+    # Write session_meta.json with tyre compound and lap time per driver
+    import json as _json
+    meta = {
+        "year": year,
+        "gp": gp,
+        "session": session_type,
+        "drivers": {}
+    }
+    for drv in drivers:
+        try:
+            drv_laps = session.laps.pick_drivers(drv)
+            if not drv_laps.empty:
+                lap = drv_laps.pick_fastest()
+                meta["drivers"][drv] = {
+                    "compound":  str(lap.get("Compound", "UNKNOWN")),
+                    "lap_time":  float(lap["LapTime"].total_seconds()) if pd.notna(lap["LapTime"]) else None,
+                    "team":      str(lap.get("Team", "UNKNOWN")),
+                }
+            else:
+                meta["drivers"][drv] = {"compound": "UNKNOWN", "lap_time": None, "team": "UNKNOWN"}
+        except Exception:
+            meta["drivers"][drv] = {"compound": "UNKNOWN", "lap_time": None, "team": "UNKNOWN"}
+
+    meta_path = os.path.join(output_dir, "session_meta.json")
+    with open(meta_path, "w", encoding="utf-8") as f:
+        _json.dump(meta, f, indent=2)
+    print(f"[F1 Studio] session_meta.json written → {meta_path}")
 
     return f"Saved to {output_dir}", results_map, ref_data['lap_time']
 
