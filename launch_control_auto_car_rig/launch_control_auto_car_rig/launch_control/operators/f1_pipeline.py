@@ -142,6 +142,16 @@ class OBJECT_OT_f1_generate_scene(Operator):
             for d in drivers:
                 generated_files[d] = os.path.join(temp_data_dir, f"{d}_hifi_path.json")
 
+            # Read compound back from session_meta.json and stamp onto queue items
+            meta_path = os.path.join(temp_data_dir, "session_meta.json")
+            if os.path.exists(meta_path):
+                with open(meta_path, encoding="utf-8") as f:
+                    meta = json.load(f)
+                for item in scene.f1_lap_queue:
+                    drv_meta = meta.get("drivers", {}).get(item.driver, {})
+                    if drv_meta.get("compound"):
+                        item.compound = drv_meta["compound"]
+
         # STEP 1 - APPEND ALL CARS FIRST (no LC registration yet)
         for item in scene.f1_lap_queue:
             car_path = db.get_car_path(item.year, item.team, item.driver)
