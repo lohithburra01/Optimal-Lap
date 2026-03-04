@@ -36,6 +36,13 @@ def register():
 
 
 def unregister():
+    # TRAIL HANDLER
+    try:
+        from .operators.f1_trail import unregister_trail_handler
+        unregister_trail_handler()
+    except Exception:
+        pass
+
     # PANELS & MENUS
     ui.unregister()
 

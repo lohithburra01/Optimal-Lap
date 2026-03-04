@@ -13,6 +13,40 @@ from ..utils.resources import get_resource_path
 from ..logger import log_info, log_error
 from ..ui.utils import show_message_box
 from ..operators.append import OBJECT_OT_append_from_file
+from ..operators.f1_trail import setup_trail_for_driver
+
+CONSTRUCTOR_COLORS = {
+    "Red Bull Racing": "#3671C6",
+    "McLaren":         "#FF8000",
+    "Ferrari":         "#E8002D",
+    "Mercedes":        "#27F4D2",
+    "Aston Martin":    "#229971",
+    "Alpine":          "#FF87BC",
+    "Williams":        "#64C4FF",
+    "Haas":            "#B6BABD",
+    "Kick Sauber":     "#52E252",
+    "Racing Bulls":    "#6692FF",
+}
+
+def get_lc_curve_for_rig(rig_obj):
+    """Find the driving path curve LC assigned to this rig."""
+    rig_name = rig_obj.name
+    suffix = rig_name.replace("car_rig_", "")
+    target_curve_name = f"driving_path_{suffix}"
+
+    # Exact match
+    curve = bpy.data.objects.get(target_curve_name)
+    if curve and curve.type == 'CURVE':
+        return curve
+
+    # Partial match (strips .001/.002 etc)
+    base_suffix = suffix.split(".")[0]
+    target_base = f"driving_path_{base_suffix}"
+    for obj in bpy.data.objects:
+        if obj.type == 'CURVE' and obj.name.startswith(target_base):
+            return obj
+
+    return None
 
 @bpy.app.handlers.persistent
 def _f1_load_post_handler(dummy):
@@ -176,11 +210,16 @@ class OBJECT_OT_f1_generate_scene(Operator):
             # Apply telemetry JSON
             json_path = os.path.join(temp_data_dir, f"{item.driver}_hifi_path.json")
             if os.path.isfile(json_path):
-                result = bpy.ops.object.apply_lap_from_json(
-                    filepath=json_path,
-                    curve_name=f"LC_LapPath_{item.driver}",
-                )
+                result = bpy.ops.object.apply_lap_from_json(filepath=json_path)
                 print(f"[F1 Studio] {item.driver} apply_lap result: {result}")
+                # Setup trail — get the curve LC actually assigned to this rig
+                if rig_obj:
+                    lc_curve = get_lc_curve_for_rig(rig_obj)
+                    if lc_curve:
+                        color = CONSTRUCTOR_COLORS.get(item.team, "#FFFFFF")
+                        setup_trail_for_driver(item.driver, color, rig_obj, lc_curve)
+                    else:
+                        print(f"[F1Trail] Could not find LC curve for {item.driver}")
             else:
                 self.report({'WARNING'}, f"JSON not found for {item.driver}: {json_path}")
 
