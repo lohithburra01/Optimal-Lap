@@ -134,6 +134,11 @@ class F1_OT_PathBrush(bpy.types.Operator):
         if self._draw_handle:
             bpy.types.SpaceView3D.draw_handler_remove(self._draw_handle, 'WINDOW')
             self._draw_handle = None
+        try:
+            from .f1_trail import sync_all_trails_from_paths
+            sync_all_trails_from_paths(context.scene)
+        except Exception:
+            pass
         context.area.header_text_set(None)
         context.area.tag_redraw()
 

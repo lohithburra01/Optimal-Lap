@@ -426,6 +426,13 @@ class F1_Pipeline_Props(bpy.types.PropertyGroup):
         default=0.0,
         unit='LENGTH',
     )
+    trail_z_offset: FloatProperty(
+        name="Trail Height",
+        description="Height above track for trail ribbon (snap-to-track + this value)",
+        default=0.2,
+        unit='LENGTH',
+        update=lambda self, ctx: _on_trail_z_offset_changed(ctx),
+    )
 
 
 # ── ALIGNMENT CALLBACK ──────────────────────────────────────────────────────
@@ -440,7 +447,7 @@ def _get_f1_path_curves(scene):
 
 
 def _on_alignment_changed(props, context):
-    """Move/rotate/scale all F1 path curves when alignment sliders change."""
+    """Move/rotate/scale all F1 path curves and their trails when alignment sliders change."""
     scene = context.scene
     paths = _get_f1_path_curves(scene)
     if not paths:
@@ -456,6 +463,22 @@ def _on_alignment_changed(props, context):
         path_obj.location.y = oy
         path_obj.rotation_euler.z = rot
         path_obj.scale = (sc, sc, sc)
+
+    # Sync trails so they match path transform
+    try:
+        from ..operators.f1_trail import sync_all_trails_from_paths
+        sync_all_trails_from_paths(scene)
+    except Exception:
+        pass
+
+
+def _on_trail_z_offset_changed(context):
+    """When trail height slider changes, re-sync trails with new offset."""
+    try:
+        from ..operators.f1_trail import sync_all_trails_from_paths
+        sync_all_trails_from_paths(context.scene)
+    except Exception:
+        pass
 
 
 # ── REGISTRATION ──────────────────────────────────────────────────────────────

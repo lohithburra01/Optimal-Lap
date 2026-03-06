@@ -158,6 +158,7 @@ class PANEL_PT_F1_Studio(bpy.types.Panel):
         box.prop(props, "normalize_z_value")
 
         box.separator()
+        box.prop(props, "trail_z_offset")
 
         # XY correction
         row = box.row(align=True)

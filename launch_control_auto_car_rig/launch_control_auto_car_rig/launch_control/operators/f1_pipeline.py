@@ -15,7 +15,7 @@ from ..utils.resources import get_resource_path
 from ..logger import log_info, log_error
 from ..ui.utils import show_message_box
 from ..operators.append import OBJECT_OT_append_from_file
-from ..operators.f1_trail import setup_trail_for_driver
+from ..operators.f1_trail import setup_trail_for_driver, sync_all_trails_from_paths
 
 CONSTRUCTOR_COLORS = {
     "Red Bull Racing": "#3671C6",
@@ -943,6 +943,7 @@ class OBJECT_OT_f1_correct_path(Operator):
         if bpy.data.objects.get("F1_Path_Diagnostic"):
             bpy.ops.f1.diagnose_path()
 
+        sync_all_trails_from_paths(scene)
         self.report({'INFO'}, f"Corrected {total_corrected} off-track vertices across {len(paths)} paths")
         return {'FINISHED'}
 
@@ -988,6 +989,7 @@ class OBJECT_OT_f1_auto_correct_path(Operator):
         if bpy.data.objects.get("F1_Path_Diagnostic"):
             bpy.ops.f1.diagnose_path()
 
+        sync_all_trails_from_paths(scene)
         if still_off == 0:
             self.report({'INFO'},
                         f"All vertices on-track after {iteration} iteration(s)")
@@ -1059,6 +1061,7 @@ class OBJECT_OT_f1_flatten_z(Operator):
                 count += 1
             path_obj.data.update_tag()
 
+        sync_all_trails_from_paths(scene)
         self.report({'INFO'}, f"Flattened {count} vertices + handles to Z={target_z:.3f}")
         return {'FINISHED'}
 
@@ -1220,6 +1223,7 @@ class OBJECT_OT_f1_snap_z_to_track(Operator):
 
             path_obj.data.update_tag()
 
+        sync_all_trails_from_paths(scene)
         msg = f"Snapped {total_snapped} vertices to track"
         if total_interpolated:
             msg += f", interpolated {total_interpolated} off-track"
