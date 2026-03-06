@@ -196,6 +196,11 @@ def _generate_single_car(item):
     bpy.context.view_layer.update()
 
     # --- 2. FIND LAUNCHCONTROL PARENT ---
+    # Use the appended collection (carrig_coll) — critical when same driver is loaded twice
+    # (e.g. HAM from Day 1 + HAM from Day 2). Searching by driver name would match the first
+    # car and apply path/trail to the wrong instance.
+    car_coll = carrig_coll
+
     lc_parents = []
     for coll in scene.collection.children:
         if 'LaunchControl' in coll.name:
@@ -205,24 +210,16 @@ def _generate_single_car(item):
             lc_parents.append(coll)
 
     search_coll = None
-    car_coll = None
     for lc in lc_parents:
         for child in lc.children_recursive:
-            if child.name.startswith('CarRig') and item['driver'] in child.name:
+            if child == carrig_coll:
                 search_coll = lc
-                car_coll = child
                 break
         if search_coll:
             break
 
     if search_coll is None and lc_parents:
         search_coll = lc_parents[-1]
-        for child in search_coll.children_recursive:
-            if child.name.startswith('CarRig'):
-                car_coll = child
-                break
-        if car_coll is None:
-            car_coll = search_coll
 
     if search_coll is None:
         print(f"[F1 Studio] ⚠️ No LaunchControl found for {item['driver']}")

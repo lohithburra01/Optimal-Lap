@@ -62,12 +62,14 @@ def load_databases():
                     _DRV_BY_SEASON = data
             except Exception as e:
                 print(f"[F1 Studio] WARNING – Could not load {name}: {e}")
-    # Testing events (optional)
+    # Testing events (optional) — Pre-Season Test 1/2 appear in Event dropdown
     test_path = os.path.join(db_dir, "testing_events.json")
     if os.path.exists(test_path):
         try:
             with open(test_path, encoding='utf-8') as f:
                 _TESTING_EVENTS = json.load(f)
+            n = sum(len(v) for v in _TESTING_EVENTS.values())
+            print(f"[F1 Studio] Testing events loaded: {n} pre-season test(s) for {list(_TESTING_EVENTS.keys())}")
         except Exception as e:
             print(f"[F1 Studio] WARNING – Could not load testing_events: {e}")
     # event_session_map (optional) — session display names
@@ -163,9 +165,10 @@ def _get_drivers_for_session(year_str, race_name, session_key, q_segment=None):
 # ── ENUM ITEM CALLBACKS ───────────────────────────────────────────────────────
 
 def _year_items(self, context):
-    if not _CALENDAR:
+    years = set(_CALENDAR.keys()) | set(_TESTING_EVENTS.keys())
+    if not years:
         return [('2024', '2024', '')]
-    return [(y, y, '') for y in sorted(_CALENDAR.keys(), reverse=True)]
+    return [(y, y, '') for y in sorted(years, reverse=True)]
 
 
 def _race_items(self, context):

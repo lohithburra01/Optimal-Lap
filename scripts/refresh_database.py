@@ -154,6 +154,46 @@ def refresh_year(year, calendar_only=False):
         print(f"[OK] {len(drivers_list)} drivers")
         time.sleep(0.5)  # Be kind to the API
 
+    # ── 5. FETCH DRIVERS FOR TESTING SESSIONS ────────────────────────────
+    for t in test_list:
+        test_num = t.get('test_number', 1)
+        event_name = f"Pre-Season Test {test_num}"
+        print(f"  [...] Loading {event_name} (Day 1)...", end=" ", flush=True)
+        try:
+            session = fastf1.get_testing_session(year, test_num, 1)
+            session.load(telemetry=False, laps=True, weather=False, messages=False)
+        except Exception as e:
+            print(f"[!] {e}")
+            race_drivers[event_name] = {"Day 1": [], "Day 2": [], "Day 3": []}
+            time.sleep(1)
+            continue
+
+        drivers_list = []
+        try:
+            results = session.results
+            if results is not None and not results.empty:
+                for _, row in results.iterrows():
+                    code = str(row.get('Abbreviation', ''))
+                    if not code or code == 'nan':
+                        continue
+                    entry = {
+                        "code": code,
+                        "number": str(row.get('DriverNumber', '')),
+                        "full_name": f"{row.get('FirstName', '')} {row.get('LastName', '')}".strip(),
+                        "first_name": str(row.get('FirstName', '')),
+                        "last_name": str(row.get('LastName', '')),
+                        "team": str(row.get('TeamName', '')),
+                        "team_raw": str(row.get('TeamName', '')),
+                    }
+                    drivers_list.append(entry)
+                    all_drivers[code] = entry
+        except Exception as e:
+            print(f"[!] parse error: {e}")
+
+        race_drivers[event_name] = {"Day 1": drivers_list, "Day 2": drivers_list, "Day 3": drivers_list}
+        print(f"[OK] {len(drivers_list)} drivers")
+        time.sleep(0.5)
+
     drv_by_race[year_str] = race_drivers
     save_json(drv_race_path, drv_by_race)
 

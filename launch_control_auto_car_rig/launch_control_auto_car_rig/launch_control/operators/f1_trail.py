@@ -92,8 +92,11 @@ def setup_trail_for_driver(driver_code, constructor_color_hex, rig_object, curve
 
     scene = bpy.context.scene
 
-    # 1. Remove existing trail
-    trail_name = f"LC_Trail_{driver_code}"
+    # Use rig name for trail identity so same driver from different sessions gets separate trails
+    trail_suffix = rig_object.name
+    trail_name = f"LC_Trail_{trail_suffix}"
+
+    # 1. Remove existing trail for THIS rig only (in case of re-run)
     existing = bpy.data.objects.get(trail_name)
     if existing:
         bpy.data.objects.remove(existing, do_unlink=True)
@@ -140,8 +143,8 @@ def setup_trail_for_driver(driver_code, constructor_color_hex, rig_object, curve
     trail_obj.rotation_euler = curve_obj.rotation_euler.copy()
     trail_obj.scale = curve_obj.scale.copy()
 
-    # 5. Material
-    mat_name = f"F1Trail_{driver_code}"
+    # 5. Material (unique per rig so same driver in multiple cars gets separate materials)
+    mat_name = f"F1Trail_{trail_suffix}"
     mat = bpy.data.materials.get(mat_name)
     if mat:
         bpy.data.materials.remove(mat)
@@ -161,7 +164,7 @@ def setup_trail_for_driver(driver_code, constructor_color_hex, rig_object, curve
     trail_obj["path_name"] = curve_obj.name
 
     register_trail_handler()
-    print(f"[F1Trail] Trail created for {driver_code} | color: {constructor_color_hex}")
+    print(f"[F1Trail] Trail created for {driver_code} ({rig_object.name}) | color: {constructor_color_hex}")
 
 
 def _get_car_world_pos(rig):

@@ -23,11 +23,21 @@ def _distance(a, b):
 
 def _create_curve_from_points(points, closed, name=LAP_CURVE_NAME):
     """Create a Bezier curve with AUTO handles for smooth F1 path."""
-    if name in bpy.data.objects:
-        bpy.data.objects.remove(bpy.data.objects[name], do_unlink=True)
-    if name in bpy.data.curves:
-        bpy.data.curves.remove(bpy.data.curves[name], do_unlink=True)
-        
+    # Remove previous temp object/curve with this exact name.
+    # IMPORTANT: only remove objects whose name matches exactly — do NOT
+    # remove data blocks that happen to share the name due to Blender's
+    # auto-incrementing (e.g. ".001").  prepare_animation copies the temp
+    # curve data into the driving_path via .data.copy(), and the copy may
+    # receive a ".001" suffix that coincides with a second car's temp name.
+    for obj in list(bpy.data.objects):
+        if obj.name == name:
+            bpy.data.objects.remove(obj, do_unlink=True)
+    # Only remove orphan curve data (0 users) to avoid destroying a copy
+    # that another driving_path is actively using.
+    old_curve = bpy.data.curves.get(name)
+    if old_curve and old_curve.users == 0:
+        bpy.data.curves.remove(old_curve)
+
     curve = bpy.data.curves.new(name=name, type="CURVE")
     curve.dimensions = "3D"
     spline = curve.splines.new("BEZIER")
@@ -280,8 +290,12 @@ class OBJECT_OT_apply_lap_from_json(bpy.types.Operator):
         closed = data.get("closed", False) # Default to false for F1 segments often? Or True for laps.
 
         # 1. Create Curve (unique name per car to avoid collisions)
-        car_name = active_car.name if active_car.name else "unknown"
-        curve_name = f"LC_LapPath_{car_name}"
+        # Use the rig object name (e.g. "car_rig_Ferrari_Hamilton") rather than the
+        # collection name (e.g. "CarRig_HAM.001") because Blender's ".001" suffix on
+        # the collection name can collide with the auto-named .data.copy() from a
+        # previous car's prepare_animation, causing it to be deleted.
+        rig_id = rig_object.name if rig_object else (active_car.name or "unknown")
+        curve_name = f"LC_LapPath_{rig_id}"
         curve_obj = _create_curve_from_points(points, closed, name=curve_name)
         
         # 2. Assign to Car
