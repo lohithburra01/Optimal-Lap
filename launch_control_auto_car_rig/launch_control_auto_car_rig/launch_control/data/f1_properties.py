@@ -12,6 +12,7 @@ _CALENDAR        = {}
 _DRV_BY_RACE     = {}
 _DRV_BY_SEASON   = {}
 _TESTING_EVENTS  = {}
+_SESSION_MAP     = {}  # event_type -> display names (from event_session_map.json)
 
 def _get_db_root():
     """Resolve path to F1_Pipeline_Assets/database relative to the open .blend file."""
@@ -29,7 +30,7 @@ def _get_db_root():
     return os.path.join(root, "F1_Pipeline_Assets", "database")
 
 def load_databases():
-    global _CALENDAR, _DRV_BY_RACE, _DRV_BY_SEASON, _TESTING_EVENTS
+    global _CALENDAR, _DRV_BY_RACE, _DRV_BY_SEASON, _TESTING_EVENTS, _SESSION_MAP
     db_dir = _get_db_root()
     if not os.path.isdir(db_dir):
         print(f"[F1 Studio] Database dir not found: {db_dir}")
@@ -69,8 +70,94 @@ def load_databases():
                 _TESTING_EVENTS = json.load(f)
         except Exception as e:
             print(f"[F1 Studio] WARNING – Could not load testing_events: {e}")
+    # event_session_map (optional) — session display names
+    esm_path = os.path.join(db_dir, "event_session_map.json")
+    if os.path.exists(esm_path):
+        try:
+            with open(esm_path, encoding='utf-8') as f:
+                _SESSION_MAP = json.load(f)
+        except Exception as e:
+            print(f"[F1 Studio] WARNING – Could not load event_session_map: {e}")
 
-# Removed global load_databases() call to avoid _RestrictData error on import
+
+# ── HELPERS (Lohith-style data fetching) ──────────────────────────────────────
+
+def _get_event(year_str, race_name):
+    """Return the calendar/testing entry dict for a given year + event name."""
+    # Check races in calendar
+    for e in _CALENDAR.get(year_str, []):
+        if e.get('event_name') == race_name:
+            out = dict(e)
+            out['event_type'] = e.get('event_type', 'race')
+            out['has_sprint'] = e.get('has_sprint', False)
+            return out
+    # Check testing events
+    for t in _TESTING_EVENTS.get(year_str, []):
+        if t.get('event_name') == race_name or f"Pre-Season Test {t.get('test_number', 1)}" == race_name:
+            return {
+                'event_name': race_name,
+                'event_type': 'testing',
+                'test_number': t.get('test_number', 1),
+                'location': t.get('location', ''),
+                'country': t.get('country', ''),
+            }
+    return None
+
+
+def _get_race_events_for_year(year_str):
+    """Build unified list: races first, then testing events."""
+    events = []
+    for e in _CALENDAR.get(year_str, []):
+        ev = dict(e)
+        ev['event_type'] = ev.get('event_type', 'race')
+        ev['has_sprint'] = ev.get('has_sprint', False)
+        events.append(ev)
+    for t in _TESTING_EVENTS.get(year_str, []):
+        events.append({
+            'event_name': f"Pre-Season Test {t.get('test_number', 1)}",
+            'event_type': 'testing',
+            'test_number': t.get('test_number', 1),
+            'round': 0,
+            'location': t.get('location', ''),
+            'country': t.get('country', ''),
+        })
+    return events
+
+
+def _get_drivers_for_session(year_str, race_name, session_key, q_segment=None):
+    """
+    Return driver list for a specific session.
+    Handles both flat list and per-session dict format. Falls back to drivers_by_season.
+    """
+    event_data = _DRV_BY_RACE.get(year_str, {}).get(race_name)
+
+    if event_data is None:
+        return _DRV_BY_SEASON.get(year_str, [])
+
+    # Per-session dict format (e.g. {"Q": {"Q1": [...], "Q2": [...], "Q3": [...]}, "R": [...]})
+    if isinstance(event_data, dict):
+        if session_key == 'Q':
+            q_data = event_data.get('Q', {})
+            if isinstance(q_data, dict):
+                if q_segment and q_segment in q_data:
+                    return q_data[q_segment]
+                return q_data.get('_all', event_data.get('_all', []))
+            return event_data.get('_all', [])
+
+        if session_key in ('Day 1', 'Day 2', 'Day 3'):
+            return event_data.get(session_key, [])
+
+        return event_data.get(session_key, event_data.get('_all', []))
+
+    # Flat list format
+    if isinstance(event_data, list):
+        if session_key == 'Q' and q_segment == 'Q3':
+            return event_data[:10]
+        if session_key == 'Q' and q_segment == 'Q2':
+            return event_data[:15]
+        return event_data
+
+    return _DRV_BY_SEASON.get(year_str, [])
 
 
 # ── ENUM ITEM CALLBACKS ───────────────────────────────────────────────────────
@@ -82,162 +169,195 @@ def _year_items(self, context):
 
 
 def _race_items(self, context):
+    """Unified list: races + testing events (Lohith-style)."""
     year = self.sel_year
-    events = _CALENDAR.get(year, [])
+    events = _get_race_events_for_year(year)
     if not events:
         return [('NONE', 'No data – check database', '')]
-    return [
-        (e['event_name'],
-         e['event_name'],
-         f"Round {e['round']}  |  {e.get('location','')}  {e.get('country','')}")
-        for e in events
-    ]
+    items = []
+    for e in events:
+        etype = e.get('event_type', 'race')
+        if etype == 'testing':
+            desc = f"Pre-Season  |  {e.get('location','')}  {e.get('country','')}"
+        else:
+            desc = f"Round {e.get('round',0)}  |  {e.get('location','')}  {e.get('country','')}"
+        items.append((e['event_name'], e['event_name'], desc))
+    return items
 
 
-def _test_event_items(self, context):
-    """Dynamic items for the testing event dropdown. Use event_name + location with ASCII only so UI shows correct name (no gibberish)."""
+def _session_items(self, context):
+    """Dynamic sessions based on event type (Lohith-style)."""
     year = self.sel_year
-    tests = _TESTING_EVENTS.get(year, [])
-    if tests:
+    race = self.sel_race
+    event = _get_event(year, race)
+    if not event:
+        return [('R', 'Race', '')]
+
+    etype = event.get('event_type', 'race')
+    has_sprint = event.get('has_sprint', False)
+    display = _SESSION_MAP.get(etype, {}).get('display', {})
+
+    if etype == 'testing':
         return [
-            (
-                str(t["test_number"]),
-                f"Test {t['test_number']}: {t.get('event_name', '')} - {t.get('location', '?')}".replace("\u2013", "-").strip(),
-                f"{t.get('event_name', '')}  |  {t.get('country', '')}",
-            )
-            for t in tests
+            ('Day 1', 'Day 1', ''),
+            ('Day 2', 'Day 2', ''),
+            ('Day 3', 'Day 3', ''),
+            ('Day Best', '★ Best Across Days', ''),
         ]
-    # Fallback when testing_events.json not populated for this year
+
+    if has_sprint:
+        sessions = ['FP1', 'SQ', 'Sprint', 'Q', 'R']
+        display = _SESSION_MAP.get('sprint_weekend', {}).get('display', display)
+    else:
+        sessions = ['FP1', 'FP2', 'FP3', 'Q', 'R']
+
+    return [(s, display.get(s, s), '') for s in sessions]
+
+
+def _q_segment_items(self, context):
     return [
-        ('1', 'Test 1 (Pre-Season)', 'First testing event of the year'),
-        ('2', 'Test 2',              'Second testing event (if applicable)'),
+        ('Q_ALL', '★ Best Q (Fastest)', 'Fastest lap across all Q segments'),
+        ('Q1', 'Q1', 'Qualifying segment 1 — all 20 drivers'),
+        ('Q2', 'Q2', 'Qualifying segment 2 — top 15'),
+        ('Q3', 'Q3', 'Qualifying segment 3 — top 10'),
     ]
 
 
 def _driver_items(self, context):
+    """Drivers for current year/race/session (Lohith-style via _get_drivers_for_session)."""
     year = self.sel_year
-    # For testing sessions, always use the season-level driver list
-    if getattr(self, 'sel_event_type', 'RACE') == 'TESTING':
-        drivers = _DRV_BY_SEASON.get(year, [])
+    race = self.sel_race
+    session = self.sel_session
+    q_seg = getattr(self, 'sel_q_segment', 'Q_ALL') if session == 'Q' else None
+    if q_seg == 'Q_ALL':
+        q_seg = None
+
+    if session == 'Day Best':
+        drivers = _get_drivers_for_session(year, race, 'Day 1', None)
     else:
-        race = self.sel_race
-        drivers = _DRV_BY_RACE.get(year, {}).get(race, [])
-        if not drivers:
-            drivers = _DRV_BY_SEASON.get(year, [])
+        drivers = _get_drivers_for_session(year, race, session, q_seg)
+
+    if not drivers:
+        drivers = _DRV_BY_SEASON.get(year, [])
     if not drivers:
         return [('NONE', 'No drivers – check database', '')]
 
-    # Sort drivers by team name so teammates are grouped together
-    sorted_drivers = sorted(drivers, key=lambda d: d.get('team_raw', ''))
-
     items = []
-    prev_team = None
-    for d in sorted_drivers:
-        team = d.get('team_raw', '')
-        # Insert a separator between different teams
-        if prev_team is not None and team != prev_team:
-            items.append(('', '', ''))
-        prev_team = team
+    for d in drivers:
+        if not isinstance(d, dict):
+            continue
+        code = d.get('code', '')
+        if not code:
+            continue
         items.append((
-            d['code'],
-            f"{d['full_name']}  [{team}]",
-            f"#{d['number']}  {d['code']}",
+            code,
+            f"{d.get('full_name', code)}  [{d.get('team_raw', '')}]",
+            f"#{d.get('number', '')}  {code}",
         ))
-    return items
+    return items if items else [('NONE', 'No drivers – check database', '')]
 
 
 # ── UPDATE CALLBACKS ──────────────────────────────────────────────────────────
 
 def _on_year_changed(self, context):
+    props = getattr(context.scene, 'f1_pipeline_props', None) if context else None
+    if props and getattr(props, 'locked_track', ''):
+        # Keep selection on locked track if it exists in new year
+        events = _get_race_events_for_year(self.sel_year)
+        for i, e in enumerate(events):
+            if e.get('event_name') == props.locked_track:
+                self['sel_race'] = i
+                self['sel_session'] = 0
+                self['sel_q_segment'] = 0
+                self['sel_driver'] = 0
+                return
     items = _race_items(self, context)
-    if items and items[0][0] != 'NONE':
-        self['sel_race'] = 0
+    for i, (val, _, _) in enumerate(items):
+        if val != 'NONE':
+            event = _get_event(self.sel_year, val)
+            if event and event.get('event_type') != 'testing':
+                self['sel_race'] = i
+                break
+    self['sel_session'] = 0
+    self['sel_q_segment'] = 0
+    self['sel_driver'] = 0
+
 
 def _on_race_changed(self, context):
-    items = _driver_items(self, context)
-    if items and items[0][0] != 'NONE':
-        self['sel_driver'] = 0
+    self['sel_session'] = 0
+    self['sel_q_segment'] = 0
+    self['sel_driver'] = 0
+
+
+def _on_session_changed(self, context):
+    self['sel_q_segment'] = 0
+    self['sel_driver'] = 0
+
+
+def _on_q_segment_changed(self, context):
+    self['sel_driver'] = 0
+    if context and context.area:
+        context.area.tag_redraw()
 
 
 # ── PROPERTY GROUPS ───────────────────────────────────────────────────────────
 
 class F1_Lap_Item(bpy.types.PropertyGroup):
-    """One entry in the lap queue."""
-    year:         IntProperty(name="Year",     default=2024)
+    """One entry in the lap queue (Lohith-style + pipeline compatibility)."""
+    year:         IntProperty(name="Year",       default=2024)
     event:        StringProperty(name="Event",   default="Bahrain Grand Prix")
-    session:      StringProperty(name="Session", default="Race")
+    session:      StringProperty(name="Session", default="R")  # R, Q, FP1, Day 1, etc.
+    q_segment:    StringProperty(name="Q Seg",   default="")
     driver:       StringProperty(name="Driver",  default="VER")
     team:         StringProperty(name="Team",    default="Red Bull Racing")
     track_id:     StringProperty(name="Track ID", default="bahrain_grand_prix")
+    fastest_lap:  BoolProperty(name="Fastest Lap", default=True)
+    compound:     StringProperty(name="Compound", default="UNKNOWN")
+    # Pipeline compatibility
     is_testing:   BoolProperty(name="Is Testing", default=False)
     test_number:  IntProperty(name="Test Number", default=1)
     test_session: IntProperty(name="Test Session", default=1)
 
 
 class F1_Pipeline_Props(bpy.types.PropertyGroup):
-    """All UI selection properties for the F1 Studio panel."""
-
-    sel_event_type: EnumProperty(
-        name="Event Type",
-        description="Choose between a race weekend or a testing session",
-        items=[
-            ('RACE',    'Race Weekend', 'Standard Grand Prix weekend'),
-            ('TESTING', 'Testing',      'Pre-season or in-season testing'),
-        ],
-        default='RACE',
-    )
+    """All UI selection properties (Lohith-style Query Engine)."""
 
     sel_year: EnumProperty(
         name="Season",
-        description="Select the F1 season year",
         items=_year_items,
         update=_on_year_changed,
     )
 
     sel_race: EnumProperty(
-        name="Race",
-        description="Select the Grand Prix",
+        name="Race / Event",
         items=_race_items,
         update=_on_race_changed,
     )
 
     sel_session: EnumProperty(
         name="Session",
-        description="Select the session type",
-        items=[
-            ('Practice 1',  'FP1',        ''),
-            ('Practice 2',  'FP2',        ''),
-            ('Practice 3',  'FP3',        ''),
-            ('Qualifying',  'Qualifying', ''),
-            ('Sprint',      'Sprint',     ''),
-            ('Race',        'Race',       ''),
-        ],
-        default='Race',
+        items=_session_items,
+        update=_on_session_changed,
     )
 
-    sel_test_number: EnumProperty(
-        name="Test Event",
-        description="Select which testing event (pre-season, in-season, etc.)",
-        items=_test_event_items,
-    )
-
-    sel_test_session: EnumProperty(
-        name="Test Day",
-        description="Select the day/session within the testing event",
-        items=[
-            ('1', 'Day 1', 'First day of testing'),
-            ('2', 'Day 2', 'Second day of testing'),
-            ('3', 'Day 3', 'Third day of testing'),
-        ],
-        default='1',
+    sel_q_segment: EnumProperty(
+        name="Q Segment",
+        items=_q_segment_items,
+        update=_on_q_segment_changed,
     )
 
     sel_driver: EnumProperty(
         name="Driver",
-        description="Select a driver (updates based on year and race)",
         items=_driver_items,
     )
 
+    fastest_lap: BoolProperty(
+        name="Fastest Lap (auto)",
+        description="Always use the fastest lap from the selected session",
+        default=True,
+    )
+
+    locked_track: StringProperty(name="Locked Track", default="")
     status_msg: StringProperty(name="Status", default="Ready")
 
     # ── GENERATION OPTIONS ───────────────────────────────────────────────

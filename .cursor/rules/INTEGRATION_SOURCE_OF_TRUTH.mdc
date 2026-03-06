@@ -1,0 +1,25 @@
+---
+description: Integration source-of-truth — THIS project is canonical; external features must adapt
+alwaysApply: true
+---
+
+# Integration: Source of Truth
+
+**THIS REPOSITORY IS THE SOURCE OF TRUTH.** It contains the correct calculations, architecture, and plugins. External features from other repos must be adapted to fit THIS project — not the other way around.
+
+## What We Import ( selectively )
+
+| Component | Import | Keep from this project |
+|-----------|--------|-------------------------|
+| **Query Engine** | UI, data fetching logic, data storage format for path gen & exports | All data processing, path generation, asset generation |
+| **Trail Generation** | Full implementation; integrate with plugin architecture | — |
+| **Sculpt Tool** | Functionality + UI | — |
+
+## What Does Not Change
+
+- Existing architecture
+- Data processing pipeline
+- Path generation system
+- Asset generation/import system
+
+External source: `arzan/F1_hot_lap_lohith` (https://github.com/arzaniraniformuladream-eng/f1_hot_lap/tree/F1_hot_lap_lohith)

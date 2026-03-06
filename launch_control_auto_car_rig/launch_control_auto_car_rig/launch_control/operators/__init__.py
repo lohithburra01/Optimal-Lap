@@ -1,6 +1,6 @@
 import bpy
 
-from . import animation, camera, custom_anim_presets, rig, append, physics, jump, extra, path, exports, speed_segment, lap_from_json, F1_HiFi_Baker_Pro, f1_pipeline
+from . import animation, camera, custom_anim_presets, rig, append, physics, jump, extra, path, exports, speed_segment, lap_from_json, F1_HiFi_Baker_Pro, f1_pipeline, path_brush
 from ..data.properties import is_pro_license
 
 if is_pro_license:
@@ -74,7 +74,6 @@ classes_tuple = (
     f1_pipeline.OBJECT_OT_f1_flatten_z,
     f1_pipeline.OBJECT_OT_f1_snap_z_to_track,
 
-
 )
 
 classes = list(classes_tuple)
@@ -108,8 +107,10 @@ def register():
     for cls in classes:
         bpy.utils.register_class(cls)
     f1_pipeline.register()
+    path_brush.register()
 
 def unregister():
+    path_brush.unregister()
     f1_pipeline.unregister()
     for cls in classes:
         bpy.utils.unregister_class(cls)

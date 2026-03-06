@@ -15,6 +15,7 @@ from ..operators.f1_pipeline import (
     OBJECT_OT_f1_flatten_z,
     OBJECT_OT_f1_snap_z_to_track,
 )
+from ..data.f1_properties import _get_event
 
 
 class PANEL_PT_F1_Studio(bpy.types.Panel):
@@ -43,60 +44,73 @@ class PANEL_PT_F1_Studio(bpy.types.Panel):
         row.operator(F1_OT_InstallDeps.bl_idname,
                      icon='IMPORT', text="Upgrade / Reinstall FastF1 (3.8.1+)")
 
-        # ── 2. QUERY ENGINE ──────────────────────────────────────────────
+        # ── 2. TRACK LOCK BAR (Lohith-style) ──────────────────────────────
+        queue_len = len(scene.f1_lap_queue)
+        if queue_len > 0 and props.locked_track:
+            box = layout.box()
+            row = box.row()
+            row.alert = False
+            row.label(text=f"🔒  {props.locked_track}", icon='LOCKED')
+
+        # ── 3. QUERY ENGINE (Lohith-style UI) ─────────────────────────────
         box = layout.box()
         box.label(text="Query Engine", icon='WORLD_DATA')
         col = box.column(align=True)
-        col.prop(props, "sel_event_type")
+
         col.prop(props, "sel_year")
 
-        if props.sel_event_type == 'TESTING':
-            col.prop(props, "sel_test_number")
-            col.prop(props, "sel_test_session")
-        else:
-            col.prop(props, "sel_race")
-            col.prop(props, "sel_session")
+        row = col.row(align=True)
+        row.enabled = (queue_len == 0)
+        row.prop(props, "sel_race")
 
+        event = _get_event(props.sel_year, props.sel_race)
+        event_type = event.get('event_type', 'race') if event else 'race'
+        is_testing = (event_type == 'testing')
+
+        col.separator()
+        col.prop(props, "sel_session")
+
+        if not is_testing and props.sel_session == 'Q':
+            row = col.row(align=True)
+            row.label(text="", icon='BLANK1')
+            sub = row.column(align=True)
+            sub.prop(props, "sel_q_segment", expand=False)
+
+        col.separator()
+        row = col.row(align=True)
+        row.prop(props, "fastest_lap", toggle=True,
+                 icon='SORTTIME',
+                 text="Fastest Lap (auto)" if props.fastest_lap else "Fastest Lap (auto): OFF")
+
+        col.separator()
         col.prop(props, "sel_driver")
 
         row = box.row()
-        row.scale_y = 1.2
+        row.scale_y = 1.3
         row.operator(OBJECT_OT_f1_add_lap_to_queue.bl_idname,
-                     icon='ADD', text="ADD LAP")
-        box.label(text="Data: 30-120 min after session ends; future sessions = no data", icon='INFO')
+                     icon='ADD', text="Add Lap to Queue")
 
-        # ── 3. LAP QUEUE ─────────────────────────────────────────────────
+        # ── 4. LAP QUEUE (Lohith-style) ───────────────────────────────────
         layout.separator()
         box = layout.box()
         row = box.row()
-        row.label(text="Lap Queue (Max 4)", icon='TEXT')
+        row.label(text=f"Lap Queue  ({queue_len}/4)", icon='LINENUMBERS_ON')
         row.operator(OBJECT_OT_f1_clear_queue.bl_idname, text="", icon='TRASH')
 
-        if len(scene.f1_lap_queue) > 0:
+        if queue_len > 0:
             for i, item in enumerate(scene.f1_lap_queue):
-                row = box.row()
-                if item.is_testing:
-                    # Look up track name from testing_events database
-                    from ..data.f1_properties import _TESTING_EVENTS
-                    _tests = _TESTING_EVENTS.get(item.year, [])
-                    _loc = ""
-                    for _t in _tests:
-                        if str(_t.get('test_number', '')) == str(item.test_number):
-                            _loc = _t.get('location', '')
-                            break
-                    _label = f"Test {item.test_number}"
-                    if _loc:
-                        _label += f" – {_loc}"
-                    _label += f" Day {item.test_session}"
-                    row.label(text=f"{i+1}. {item.driver}  |  {item.year}  |  {_label}")
-                else:
-                    row.label(text=f"{i+1}. {item.driver}  |  {item.year}  |  {item.event}")
+                row = box.row(align=True)
+                sess_label = item.session
+                if item.q_segment:
+                    sess_label = item.q_segment
+                lap_label = "FAST" if item.fastest_lap else "Lap ?"
+                row.label(text=f"{i+1}.  {item.driver}  |  {item.year}  {sess_label}  {lap_label}")
                 op = row.operator(OBJECT_OT_f1_remove_lap.bl_idname, text="", icon='X')
                 op.index = i
         else:
             box.label(text="Queue is empty", icon='INFO')
 
-        # ── 4. STATUS & GENERATE ─────────────────────────────────────────
+        # ── 5. STATUS & GENERATE ─────────────────────────────────────────
         layout.separator()
         layout.label(text=f"Status: {props.status_msg}")
 
@@ -161,6 +175,18 @@ class PANEL_PT_F1_Studio(bpy.types.Panel):
         col = box.column(align=True)
         col.prop(props, "correction_falloff")
         col.prop(props, "correction_strength")
+
+        # ── 7. PATH SCULPT TOOLS ────────────────────────────────────────
+        layout.separator()
+        box = layout.box()
+        box.label(text="Path Sculpt Tools", icon='BRUSH_DATA')
+        box.prop_search(scene, "f1_path_object", bpy.data, "objects", text="Path")
+        row = box.row(align=True)
+        row.prop(scene, "f1_brush_radius",   text="Radius")
+        row.prop(scene, "f1_brush_strength", text="Strength")
+        box.prop(scene, "f1_brush_mode", text="Mode")
+        box.operator("f1.path_brush", text="Sculpt Path", icon='SCULPTMODE_HLT')
+        box.label(text="M=Push/Pull  Scroll=Radius  Shift+Scroll=Strength", icon='INFO')
 
 
 classes = [PANEL_PT_F1_Studio]

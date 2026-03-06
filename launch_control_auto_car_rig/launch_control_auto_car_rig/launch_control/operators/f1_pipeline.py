@@ -15,6 +15,42 @@ from ..utils.resources import get_resource_path
 from ..logger import log_info, log_error
 from ..ui.utils import show_message_box
 from ..operators.append import OBJECT_OT_append_from_file
+from ..operators.f1_trail import setup_trail_for_driver
+
+CONSTRUCTOR_COLORS = {
+    "Red Bull Racing": "#3671C6",
+    "McLaren":         "#FF8000",
+    "Ferrari":         "#E8002D",
+    "Mercedes":        "#27F4D2",
+    "Aston Martin":    "#229971",
+    "Alpine":          "#FF87BC",
+    "Williams":        "#64C4FF",
+    "Haas":            "#B6BABD",
+    "Kick Sauber":     "#52E252",
+    "Racing Bulls":    "#6692FF",
+}
+
+
+def get_lc_curve_for_rig(rig_obj):
+    """Find the driving path curve LC assigned to this rig."""
+    if not rig_obj:
+        return None
+    rig_name = rig_obj.name
+    suffix = rig_name.replace("car_rig_", "")
+    target_curve_name = f"driving_path_{suffix}"
+
+    curve = bpy.data.objects.get(target_curve_name)
+    if curve and curve.type == 'CURVE':
+        return curve
+
+    base_suffix = suffix.split(".")[0]
+    target_base = f"driving_path_{base_suffix}"
+    for obj in bpy.data.objects:
+        if obj.type == 'CURVE' and obj.name.startswith(target_base):
+            return obj
+
+    return None
+
 
 @bpy.app.handlers.persistent
 def _f1_load_post_handler(dummy):
@@ -242,6 +278,14 @@ def _generate_single_car(item):
     if os.path.isfile(json_path):
         result = bpy.ops.object.apply_lap_from_json(filepath=json_path)
         print(f"[F1 Studio] {item['driver']} apply_lap result: {result}")
+        # Setup trail — get the curve LC actually assigned to this rig
+        if rig_obj:
+            lc_curve = get_lc_curve_for_rig(rig_obj) or driving_path
+            if lc_curve:
+                color = CONSTRUCTOR_COLORS.get(item.get("team", ""), "#FFFFFF")
+                setup_trail_for_driver(item['driver'], color, rig_obj, lc_curve)
+            else:
+                print(f"[F1Trail] Could not find LC curve for {item['driver']}")
     else:
         print(f"[F1 Studio] ⚠️ JSON not found: {json_path}")
 
@@ -339,13 +383,16 @@ class OBJECT_OT_f1_generate_scene(Operator):
                 settings['is_testing']    = True
                 settings['test_number']   = test_num
                 settings['test_session']  = test_sess
+                session_for_baker = str(test_sess)  # Day 1/2/3
+            else:
+                session_for_baker = _session_key_to_baker(session)
 
             if F1_HiFi_Baker_Pro.MISSING_DEPS:
                 self.report({'ERROR'}, "Missing Dependencies. Please install FastF1 via preferences.")
                 return {'CANCELLED'}
 
             msg, _map, _lt = F1_HiFi_Baker_Pro.generate_multirail_data(
-                year, event, session, drivers, settings)
+                year, event, session_for_baker, drivers, settings)
             print(f"Baker: {msg}")
             if _lt is None or msg.startswith("Error") or msg.startswith("FastF1"):
                 self.report({'ERROR'}, msg[:200] if len(msg) > 200 else msg)
@@ -1184,6 +1231,14 @@ class OBJECT_OT_f1_snap_z_to_track(Operator):
 # ==============================================================================
 # QUEUE MANAGEMENT
 # ==============================================================================
+def _session_key_to_baker(session_key):
+    """Map Lohith UI session keys to FastF1/Baker session names."""
+    m = {'R': 'Race', 'Q': 'Qualifying', 'FP1': 'Practice 1', 'FP2': 'Practice 2', 'FP3': 'Practice 3',
+         'SQ': 'Sprint Qualifying', 'Sprint': 'Sprint',
+         'Day 1': '1', 'Day 2': '2', 'Day 3': '3', 'Day Best': '1'}
+    return m.get(session_key, session_key)
+
+
 class OBJECT_OT_f1_add_lap_to_queue(Operator):
     bl_idname = "f1.add_lap"
     bl_label = "Add Lap to Queue"
@@ -1196,41 +1251,46 @@ class OBJECT_OT_f1_add_lap_to_queue(Operator):
             self.report({'WARNING'}, "Queue is full (Max 4)")
             return {'CANCELLED'}
 
-        item = scene.f1_lap_queue.add()
-        item.year   = int(props.sel_year)
-        item.driver = props.sel_driver
+        from ..data.f1_properties import _get_event, _DRV_BY_RACE, _DRV_BY_SEASON, _get_drivers_for_session
 
-        if props.sel_event_type == 'TESTING':
+        event = _get_event(props.sel_year, props.sel_race)
+        is_testing = event and event.get('event_type') == 'testing'
+
+        item = scene.f1_lap_queue.add()
+        item.year       = int(props.sel_year)
+        item.driver     = props.sel_driver
+        item.fastest_lap = props.fastest_lap
+        item.q_segment  = getattr(props, 'sel_q_segment', 'Q_ALL') if props.sel_session == 'Q' else ''
+
+        if is_testing:
             item.is_testing   = True
-            item.test_number  = int(props.sel_test_number)
-            item.test_session = int(props.sel_test_session)
-            item.event        = f"Pre-Season Test {item.test_number}"
-            item.session      = f"Testing Day {item.test_session}"
-            item.track_id     = f"testing_{item.year}_test{item.test_number}"
+            item.test_number  = event.get('test_number', 1)
+            item.test_session = int(_session_key_to_baker(props.sel_session)) if props.sel_session in ('Day 1', 'Day 2', 'Day 3') else 1
+            if props.sel_session == 'Day Best':
+                item.test_session = 1  # Day Best: use Day 1 for now
+            item.event    = event.get('event_name', f"Pre-Season Test {item.test_number}")
+            item.session  = props.sel_session  # Day 1, Day 2, Day 3, Day Best
+            item.track_id = f"testing_{item.year}_test{item.test_number}"
         else:
             item.is_testing   = False
-            item.event        = props.sel_race
-            item.session      = props.sel_session
-            item.track_id     = props.sel_race.lower().replace(" ", "_")
+            item.test_number  = 1
+            item.test_session = 1
+            item.event    = props.sel_race
+            item.session  = props.sel_session  # R, Q, FP1, etc.
+            item.track_id = props.sel_race.lower().replace(" ", "_")
 
-        # Resolve team name from database
-        from ..data.f1_properties import _DRV_BY_RACE, _DRV_BY_SEASON
-        if item.is_testing:
-            season_drivers = _DRV_BY_SEASON.get(props.sel_year, [])
-            driver_entry = next((d for d in season_drivers if d['code'] == props.sel_driver), None)
-        else:
-            race_drivers = _DRV_BY_RACE.get(props.sel_year, {}).get(props.sel_race, [])
-            driver_entry = next((d for d in race_drivers if d['code'] == props.sel_driver), None)
-            if not driver_entry:
-                season_drivers = _DRV_BY_SEASON.get(props.sel_year, [])
-                driver_entry = next((d for d in season_drivers if d['code'] == props.sel_driver), None)
+        # Resolve team from _get_drivers_for_session
+        q_seg = item.q_segment if item.q_segment != 'Q_ALL' else None
+        drivers = _get_drivers_for_session(props.sel_year, props.sel_race, props.sel_session, q_seg)
+        if not drivers:
+            drivers = _DRV_BY_SEASON.get(props.sel_year, [])
+        driver_entry = next((d for d in drivers if isinstance(d, dict) and d.get('code') == props.sel_driver), None)
         item.team = driver_entry['team_raw'] if driver_entry else "Unknown Team"
 
+        # Track lock (Lohith-style)
         if len(scene.f1_lap_queue) == 1:
-            if item.is_testing:
-                props.status_msg = f"Ref: {item.driver} @ Test {item.test_number} Day {item.test_session}"
-            else:
-                props.status_msg = f"Ref: {item.driver} @ {item.event}"
+            props.locked_track = item.event
+            props.status_msg = f"Ref: {item.driver} @ {item.event}"
 
         return {'FINISHED'}
 
@@ -1252,7 +1312,9 @@ class OBJECT_OT_f1_clear_queue(Operator):
 
     def execute(self, context):
         context.scene.f1_lap_queue.clear()
-        context.scene.f1_pipeline_props.status_msg = "Ready"
+        props = context.scene.f1_pipeline_props
+        props.locked_track = ""
+        props.status_msg = "Ready"
         return {'FINISHED'}
 
 
@@ -1263,3 +1325,5 @@ def register():
 def unregister():
     if _f1_load_post_handler in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(_f1_load_post_handler)
+    from .f1_trail import unregister_trail_handler
+    unregister_trail_handler()
