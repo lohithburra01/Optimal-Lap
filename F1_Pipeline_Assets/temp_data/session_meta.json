@@ -1,0 +1,22 @@
+{
+  "year": 2024,
+  "gp": "Australian Grand Prix",
+  "session": "Qualifying",
+  "drivers": {
+    "NOR": {
+      "compound": "SOFT",
+      "lap_time": 76.315,
+      "team": "McLaren"
+    },
+    "PIA": {
+      "compound": "SOFT",
+      "lap_time": 76.572,
+      "team": "McLaren"
+    },
+    "VER": {
+      "compound": "SOFT",
+      "lap_time": 75.915,
+      "team": "Red Bull Racing"
+    }
+  }
+}
