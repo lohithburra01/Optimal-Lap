@@ -297,13 +297,23 @@
       "scale": 1.0
     }
   },
-"pre-season_test_1": {
+  "pre-season_test_1": {
     "track_name": "Bahrain Grand Prix",
     "versions": [],
     "alignment": {
       "offset_x": 150.87,
       "offset_y": -300.42,
       "rotation": -1.529432,
+      "scale": 1.0
+    }
+  },
+  "australian_grand_prix": {
+    "track_name": "Australian Grand Prix",
+    "versions": [],
+    "alignment": {
+      "offset_x": -10.33,
+      "offset_y": -81.47,
+      "rotation": 0.0,
       "scale": 1.0
     }
   }
