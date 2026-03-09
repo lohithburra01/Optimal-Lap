@@ -205,7 +205,9 @@ def calculate_hifi_delta(ref, tgt):
 def generate_telemetry_csv(year, gp, session_type, drivers, settings):
     print(f"Generating Telemetry CSVs for {drivers}...")
     fps = settings.get('fps', 24)
-    output_dir = settings.get('output_dir', os.path.join(os.path.expanduser("~"), "Downloads"))
+    exports_dir = settings.get('exports_dir', settings.get('output_dir', os.path.join(os.path.expanduser("~"), "Downloads")))
+    if not os.path.exists(exports_dir):
+        os.makedirs(exports_dir)
 
     is_testing = settings.get('is_testing', False)
     try:
@@ -316,6 +318,7 @@ def generate_telemetry_csv(year, gp, session_type, drivers, settings):
         drv_dists = f_dist_at_time(drv_frame_times)
         
         # Sample Raw Telemetry at these distances
+        f_time_s = interp1d(drv_data['dist'], drv_data['time'], fill_value="extrapolate")
         f_spd = interp1d(drv_data['dist'], drv_data['speed'], fill_value="extrapolate")
         f_thr = interp1d(drv_data['dist'], drv_data['throttle'], fill_value="extrapolate")
         f_brk = interp1d(drv_data['dist'], drv_data['brake'], fill_value="extrapolate")
@@ -328,9 +331,14 @@ def generate_telemetry_csv(year, gp, session_type, drivers, settings):
         ers_deploy = np.zeros_like(raw_drs, dtype=int)
         ers_deploy[raw_drs >= 8] = 1
         ers_deploy[raw_drs >= 10] = 2
-        
+
+        # time_s: seconds from lap start, normalised so first sample = 0
+        raw_time_s = f_time_s(drv_dists)
+        time_s = np.round(raw_time_s - raw_time_s[0], 4)
+
         df_out = pd.DataFrame({
             'frame': drv_frames,
+            'time_s': time_s,
             'distance': np.round(drv_dists, 2),
             'speed': np.round(f_spd(drv_dists), 1),
             'throttle': np.round(f_thr(drv_dists), 1),
@@ -340,11 +348,11 @@ def generate_telemetry_csv(year, gp, session_type, drivers, settings):
             'ers_deploy': ers_deploy
         })
         
-        fname = os.path.join(output_dir, f"{drv}_telemetry.csv")
+        fname = os.path.join(exports_dir, f"{drv}_telemetry.csv")
         df_out.to_csv(fname, index=False)
         
     # Save Delta CSV
-    pd.DataFrame(delta_data).to_csv(os.path.join(output_dir, "delta_comparison.csv"), index=False)
+    pd.DataFrame(delta_data).to_csv(os.path.join(exports_dir, "delta_comparison.csv"), index=False)
     print("CSV Export Complete.")
 
 
@@ -354,7 +362,7 @@ def generate_telemetry_csv(year, gp, session_type, drivers, settings):
 # ==============================================================================
 # 6. MINIMAP RENDERER
 # ==============================================================================
-def generate_minimap_frames(session, drivers, output_dir, ref_driver, year, event):
+def generate_minimap_frames(session, drivers, exports_dir, ref_driver, year, event):
     
     TEAM_COLORS = {
         'Red Bull Racing': '#3671C6',
@@ -382,7 +390,7 @@ def generate_minimap_frames(session, drivers, output_dir, ref_driver, year, even
     print(f"Generating Minimap Frames...")
     
     # Load Driver Database
-    db_path = os.path.join(os.path.dirname(output_dir), 'database', 'drivers_by_race.json')
+    db_path = os.path.join(os.path.dirname(exports_dir), 'database', 'drivers_by_race.json')
     race_drivers_db = []
     
     if os.path.exists(db_path):
@@ -416,7 +424,7 @@ def generate_minimap_frames(session, drivers, output_dir, ref_driver, year, even
         return '#FFFFFF'
 
     # 1. Setup Output Directory
-    frames_dir = os.path.join(output_dir, "minimap_frames")
+    frames_dir = os.path.join(exports_dir, "minimap_frames")
     if not os.path.exists(frames_dir):
         os.makedirs(frames_dir)
         
@@ -457,7 +465,7 @@ def generate_minimap_frames(session, drivers, output_dir, ref_driver, year, even
     max_frames = 0
     
     for drv in drivers:
-        csv_path = os.path.join(output_dir, f"{drv}_telemetry.csv")
+        csv_path = os.path.join(exports_dir, f"{drv}_telemetry.csv")
         if not os.path.exists(csv_path):
             print(f"Missing CSV for {drv}")
             continue
@@ -495,47 +503,32 @@ def generate_minimap_frames(session, drivers, output_dir, ref_driver, year, even
     # Plot Track Outline
     ax.plot(track_x, track_y, color='white', linewidth=2, alpha=0.6)
     
-    # Initial Dots
-    scatters = {}
-    texts = {}
-    
-    for drv in driver_data:
-        color = driver_data[drv]['color']
-        # Scatter dot
-        sc = ax.scatter([], [], color=color, s=100, zorder=10, edgecolors='white', linewidth=1)
-        scatters[drv] = sc
-        # Text Label
-        txt = ax.text(0, 0, drv, color='white', fontsize=10, fontweight='bold', ha='left', va='center')
-        texts[drv] = txt
+    avg_dot = ax.scatter([], [], color='#FFFFFF', s=140, zorder=10,
+                         edgecolors='none', linewidth=0)
 
     print(f"Rendering {max_frames} frames...")
-    
+
     # Frame Loop
     for i in range(max_frames):
+        xs, ys = [], []
         for drv in driver_data:
-            # Get distance for this frame
             dists = driver_data[drv]['dist']
             if i < len(dists):
-                d = dists[i]
-                x_pos, y_pos = get_pos_from_dist(d)
-                
-                # Update Scatter
-                scatters[drv].set_offsets([[x_pos, y_pos]])
-                
-                # Update Text (offset slightly)
-                texts[drv].set_position((x_pos + 400, y_pos)) # Offset in world units (approx meters)
-                # Ensure visible
-                scatters[drv].set_visible(True)
-                texts[drv].set_visible(True)
-            else:
-                # Hide if out of data
-                scatters[drv].set_visible(False)
-                texts[drv].set_visible(False)
-        
-        # Save Frame
+                x_pos, y_pos = get_pos_from_dist(dists[i])
+                xs.append(x_pos)
+                ys.append(y_pos)
+
+        if xs:
+            avg_x = sum(xs) / len(xs)
+            avg_y = sum(ys) / len(ys)
+            avg_dot.set_offsets([[avg_x, avg_y]])
+            avg_dot.set_visible(True)
+        else:
+            avg_dot.set_visible(False)
+
         frame_name = os.path.join(frames_dir, f"frame_{i:05d}.png")
         plt.savefig(frame_name, transparent=True, dpi=dpi)
-        
+
         if i % 100 == 0:
             print(f"  Frame {i}/{max_frames}", end='\r')
             
@@ -617,8 +610,6 @@ def generate_multirail_data(year, gp, session_type, drivers, settings):
 
     # 0th Derivative (Position)
     x_pts, y_pts = splev(u_new, tck)
-    # 1st Derivative (Velocity/Tangent) - GUARANTEES SMOOTHNESS
-    dx_pts, dy_pts = splev(u_new, tck, der=1)
 
     base_points = np.column_stack((x_pts, y_pts, np.zeros_like(x_pts)))
 
@@ -626,48 +617,6 @@ def generate_multirail_data(year, gp, session_type, drivers, settings):
     segment_lengths = np.sqrt(np.sum(np.diff(base_points, axis=0)**2, axis=1))
     actual_total_len = np.sum(segment_lengths)
     rail_dist_step = actual_total_len / (num_points - 1)
-
-    # --- CURVATURE OFFSETS ---
-    lookahead = settings['lookahead']
-    width = settings['width']
-    offsets_list_L = []
-    offsets_list_R = []
-
-    for i in range(len(base_points)):
-        # Calculate curvature using smooth derivatives
-        look_i = (i + lookahead) % len(base_points)
-
-        # Tangent at current and lookahead
-        tan_curr = np.array([dx_pts[i], dy_pts[i]])
-        tan_look = np.array([dx_pts[look_i], dy_pts[look_i]])
-
-        # Normalize for cross product check
-        if np.linalg.norm(tan_curr) > 0: tan_curr /= np.linalg.norm(tan_curr)
-        if np.linalg.norm(tan_look) > 0: tan_look /= np.linalg.norm(tan_look)
-
-        cross_z = tan_curr[0]*tan_look[1] - tan_curr[1]*tan_look[0]
-        turn_dir = np.sign(cross_z)
-        curve_mag = abs(cross_z) * 10
-
-        offset_L = 0.0; offset_R = 0.0
-        if curve_mag > 0.1:
-            outside = turn_dir * (width * 0.4)
-            apex = -turn_dir * (width * 0.45)
-            t_val = (i % 100) / 100.0
-            offset_L = outside + (apex - outside) * (t_val**3)
-            offset_R = apex + (outside - apex) * (t_val**0.5)
-
-        offsets_list_L.append(offset_L)
-        offsets_list_R.append(offset_R)
-
-    # Smooth offsets (Window adjusted for high res)
-    window = 400
-    def smooth_arr(arr):
-        padded = np.pad(arr, (window//2, window//2), mode='wrap')
-        return np.convolve(padded, np.ones(window)/window, mode='valid')
-
-    smooth_L = smooth_arr(offsets_list_L)
-    smooth_R = smooth_arr(offsets_list_R)
 
     # --- EXPORT ---
     output_dir = settings.get('output_dir', os.path.join(os.path.expanduser("~"), "Downloads"))
@@ -680,7 +629,8 @@ def generate_multirail_data(year, gp, session_type, drivers, settings):
         metrics_display = "Ref (Baseline)"
         if d == ref_driver:
             f_time_at_dist = interp1d(ref_data['dist'], ref_data['time'], kind='linear', fill_value="extrapolate")
-            my_offset_arr = np.zeros(len(base_points))
+            drv_x_pts, drv_y_pts = x_pts, y_pts
+            drv_dist_step = rail_dist_step
         else:
             tgt_data = get_clean_trace(session, d)
             if not tgt_data: continue
@@ -693,29 +643,31 @@ def generate_multirail_data(year, gp, session_type, drivers, settings):
 
                 ref_time_interp = interp1d(ref_data['dist'], ref_data['time'], fill_value="extrapolate")
                 delta_interp = interp1d(d_axis, final_delta, fill_value="extrapolate")
-                f_time_at_dist = lambda dist_m: float(ref_time_interp(dist_m) + delta_interp(dist_m))
+                f_time_at_dist = lambda dist_m, _ri=ref_time_interp, _di=delta_interp: float(_ri(dist_m) + _di(dist_m))
             else:
                 f_time_at_dist = lambda x: 0
 
-            my_offset_arr = smooth_L if (d_idx % 2 != 0) else smooth_R
+            tgt_path_x = tgt_data['x'] * scale_geo - cx
+            tgt_path_y = tgt_data['y'] * scale_geo - cy
+            tgt_u = tgt_data['dist'] / tgt_data['dist'].max()
+            tgt_smooth = len(tgt_path_x) * 10
+            try:
+                tgt_tck, _ = splprep([tgt_path_x, tgt_path_y], u=tgt_u, k=3,
+                                     s=tgt_smooth, per=1 if is_closed else 0)
+            except Exception:
+                tgt_tck, _ = splprep([tgt_path_x, tgt_path_y], s=len(tgt_path_x), per=0)
+            drv_x_pts, drv_y_pts = splev(u_new, tgt_tck)
+
+            drv_pts = np.column_stack((drv_x_pts, drv_y_pts, np.zeros_like(drv_x_pts)))
+            drv_segs = np.sqrt(np.sum(np.diff(drv_pts, axis=0)**2, axis=1))
+            drv_dist_step = np.sum(drv_segs) / (num_points - 1)
 
         results_map[d] = metrics_display
         driver_points = []
 
-        for i in range(len(base_points)):
-            # --- NORMAL VECTOR FIX ---
-            # Use analytical derivative [dx, dy] rotated 90 deg
-            dx, dy = dx_pts[i], dy_pts[i]
+        for i in range(num_points):
+            pos_x, pos_y = float(drv_x_pts[i]), float(drv_y_pts[i])
 
-            # Normal is (-dy, dx)
-            normal = np.array([-dy, dx, 0.0])
-            norm_mag = np.linalg.norm(normal)
-            if norm_mag > 0: normal /= norm_mag
-
-            # Apply offset
-            pos = base_points[i] + (normal * my_offset_arr[i])
-
-            # Physics
             original_dist_ref = u_new[i] * ref_data['dist'].max()
             original_dist_next = u_new[min(i+1, len(u_new)-1)] * ref_data['dist'].max()
 
@@ -724,10 +676,10 @@ def generate_multirail_data(year, gp, session_type, drivers, settings):
 
             dt = t_next - t_curr
             if dt <= 0: dt = 0.001
-            req_speed = rail_dist_step / dt
+            req_speed = drv_dist_step / dt
 
             driver_points.append({
-                "x": round(float(pos[0]), 3), "y": round(float(pos[1]), 3), "z": 0.0,
+                "x": round(pos_x, 3), "y": round(pos_y, 3), "z": 0.0,
                 "speed": round(req_speed, 2)
             })
 
@@ -745,11 +697,14 @@ def generate_multirail_data(year, gp, session_type, drivers, settings):
 
     
     # CALL NEW CSV GENERATOR
+    exports_dir = settings.get('exports_dir', output_dir)
+    if not os.path.exists(exports_dir):
+        os.makedirs(exports_dir)
     generate_telemetry_csv(year, gp, session_type, drivers, settings)
 
     # CALL MINIMAP GENERATOR (if enabled)
     if settings.get('render_minimap', True):
-        generate_minimap_frames(session, drivers, output_dir, ref_driver, year, gp)
+        generate_minimap_frames(session, drivers, exports_dir, ref_driver, year, gp)
     else:
         print("[F1 Baker] Minimap rendering skipped (disabled in settings)")
 

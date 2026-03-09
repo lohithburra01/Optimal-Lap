@@ -1,6 +1,6 @@
 import bpy
 
-from . import animation, camera, custom_anim_presets, rig, append, physics, jump, extra, path, exports, speed_segment, lap_from_json, F1_HiFi_Baker_Pro, f1_pipeline, path_brush
+from . import animation, camera, custom_anim_presets, rig, append, physics, jump, extra, path, exports, speed_segment, lap_from_json, F1_HiFi_Baker_Pro, f1_pipeline, path_brush, heli_cam, f1_trail
 from ..data.properties import is_pro_license
 
 if is_pro_license:
@@ -73,6 +73,16 @@ classes_tuple = (
     f1_pipeline.OBJECT_OT_f1_clear_diagnostic,
     f1_pipeline.OBJECT_OT_f1_flatten_z,
     f1_pipeline.OBJECT_OT_f1_snap_z_to_track,
+    f1_pipeline.OBJECT_OT_f1_render_minimap,
+    heli_cam.F1_OT_create_heli_cam,
+    heli_cam.F1_OT_remove_heli_cam,
+    heli_cam.F1_OT_heli_set_marker,
+    heli_cam.F1_OT_heli_delete_marker,
+    heli_cam.F1_OT_heli_clear_markers,
+    heli_cam.F1_OT_heli_prev_marker,
+    heli_cam.F1_OT_heli_next_marker,
+    f1_trail.F1_OT_refresh_trails,
+    f1_trail.F1_OT_bake_trails,
 
 )
 
@@ -108,8 +118,10 @@ def register():
         bpy.utils.register_class(cls)
     f1_pipeline.register()
     path_brush.register()
+    heli_cam.register()
 
 def unregister():
+    heli_cam.unregister()
     path_brush.unregister()
     f1_pipeline.unregister()
     for cls in classes:

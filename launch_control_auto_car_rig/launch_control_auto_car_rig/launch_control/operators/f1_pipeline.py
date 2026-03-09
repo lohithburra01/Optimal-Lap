@@ -92,6 +92,11 @@ class F1_Database_Manager:
         os.makedirs(temp, exist_ok=True)
         return temp
 
+    def get_exports_dir(self):
+        exports = os.path.join(self.root, "exports")
+        os.makedirs(exports, exist_ok=True)
+        return exports
+
 # ==============================================================================
 # PIPELINE OPERATOR
 # ==============================================================================
@@ -365,14 +370,16 @@ class OBJECT_OT_f1_generate_scene(Operator):
             batches[key].append((item.driver, idx))
 
         _pipeline_temp_dir = db.get_temp_dir()
+        _pipeline_exports_dir = db.get_exports_dir()
 
         props = scene.f1_pipeline_props
         for (year, event, session, is_testing, test_num, test_sess), driver_slots in batches.items():
             drivers = [x[0] for x in driver_slots]
             slot_ids = [x[1] for x in driver_slots]
             settings = {
-                'resolution': 0.5, 'width': 6.0, 'lookahead': 70,
+                'resolution': 0.5,
                 'output_dir': _pipeline_temp_dir,
+                'exports_dir': _pipeline_exports_dir,
                 'render_minimap': props.render_minimap,
                 'slot_ids': slot_ids,
             }
@@ -871,8 +878,12 @@ class OBJECT_OT_f1_diagnose_path(Operator):
         return {'FINISHED'}
 
 
-def _correct_single_pass(path_obj, track_obj, falloff, strength):
-    """Run one correction pass on a single path. Returns number of off-track vertices found."""
+def _correct_single_pass(path_obj, track_obj, falloff, strength, inset=0.0):
+    """Run one correction pass on a single path. Returns number of off-track vertices found.
+
+    *inset*: extra distance (meters) to push corrected vertices past the
+    track edge toward the track center, preventing cars from riding the edge.
+    """
     points, ptype = _get_path_points(path_obj)
     closed = path_obj.data.splines[0].use_cyclic_u
     off_count = 0
@@ -887,6 +898,14 @@ def _correct_single_pass(path_obj, track_obj, falloff, strength):
         else:
             correction = nearest_world - co_world
             correction.z = 0.0
+
+            # Extend correction past the edge by inset amount.
+            # The correction vector already points from the off-track
+            # position toward the track, so its direction is always
+            # "inward" regardless of which side the point is on.
+            if abs(inset) > 1e-4 and correction.length > 1e-4:
+                correction += correction.normalized() * inset
+
             raw_corrections.append(correction * strength)
             off_count += 1
 
@@ -919,6 +938,7 @@ class OBJECT_OT_f1_correct_path(Operator):
         track_obj = props.track_surface_obj
         falloff = props.correction_falloff
         strength = props.correction_strength
+        inset = props.correction_inset
 
         if not track_obj or track_obj.type != 'MESH':
             self.report({'ERROR'}, "Select a valid Track Surface mesh object")
@@ -935,7 +955,7 @@ class OBJECT_OT_f1_correct_path(Operator):
 
         total_corrected = 0
         for path_obj in paths:
-            total_corrected += _correct_single_pass(path_obj, track_obj, falloff, strength)
+            total_corrected += _correct_single_pass(path_obj, track_obj, falloff, strength, inset)
 
         if bpy.data.objects.get("F1_Path_Diagnostic"):
             bpy.ops.f1.diagnose_path()
@@ -960,6 +980,7 @@ class OBJECT_OT_f1_auto_correct_path(Operator):
         track_obj = props.track_surface_obj
         falloff = props.correction_falloff
         strength = props.correction_strength
+        inset = props.correction_inset
 
         if not track_obj or track_obj.type != 'MESH':
             self.report({'ERROR'}, "Select a valid Track Surface mesh object")
@@ -979,7 +1000,7 @@ class OBJECT_OT_f1_auto_correct_path(Operator):
             iteration += 1
             still_off = 0
             for path_obj in paths:
-                still_off += _correct_single_pass(path_obj, track_obj, falloff, strength)
+                still_off += _correct_single_pass(path_obj, track_obj, falloff, strength, inset)
             if still_off == 0:
                 break
 
@@ -1316,6 +1337,82 @@ class OBJECT_OT_f1_clear_queue(Operator):
         props = context.scene.f1_pipeline_props
         props.locked_track = ""
         props.status_msg = "Ready"
+        return {'FINISHED'}
+
+
+class OBJECT_OT_f1_render_minimap(Operator):
+    bl_idname = "f1.render_minimap"
+    bl_label = "Render Minimap"
+    bl_description = (
+        "Render minimap frames from existing telemetry CSVs "
+        "(no asset import needed)"
+    )
+
+    def execute(self, context):
+        if F1_HiFi_Baker_Pro.MISSING_DEPS:
+            self.report({'ERROR'}, "Missing Dependencies. Install FastF1 first.")
+            return {'CANCELLED'}
+
+        scene = context.scene
+        queue = scene.f1_lap_queue
+
+        db = F1_Database_Manager()
+        exports_dir = db.get_exports_dir()
+
+        # Discover drivers from existing CSVs
+        csv_drivers = []
+        if os.path.isdir(exports_dir):
+            for fname in sorted(os.listdir(exports_dir)):
+                if fname.endswith("_telemetry.csv"):
+                    code = fname.replace("_telemetry.csv", "")
+                    csv_drivers.append(code)
+
+        if not csv_drivers:
+            self.report({'ERROR'}, "No telemetry CSVs found in exports folder.")
+            return {'CANCELLED'}
+
+        # Determine year/event/session from queue or properties
+        if len(queue) > 0:
+            first = queue[0]
+            year = first.year
+            event = first.event
+            session_key = first.session
+            is_testing = first.is_testing
+            test_number = first.test_number
+            test_session = first.test_session
+        else:
+            props = scene.f1_pipeline_props
+            year = int(props.sel_year)
+            event = props.sel_race
+            session_key = props.sel_session
+            is_testing = False
+            test_number = 1
+            test_session = 1
+
+        import fastf1
+        cache_dir = os.path.join(os.path.expanduser("~"), "fastf1_cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        fastf1.Cache.enable_cache(cache_dir)
+
+        try:
+            if is_testing:
+                session = fastf1.get_testing_session(
+                    year, int(test_number), int(test_session))
+            else:
+                session = fastf1.get_session(
+                    year, event, _session_key_to_baker(session_key))
+            session.load(telemetry=True, laps=True,
+                         weather=False, messages=False)
+        except Exception as e:
+            self.report({'ERROR'}, f"FastF1 load error: {e}")
+            return {'CANCELLED'}
+
+        ref_driver = csv_drivers[0]
+        F1_HiFi_Baker_Pro.generate_minimap_frames(
+            session, csv_drivers, exports_dir, ref_driver, year, event)
+
+        self.report({'INFO'},
+                    f"Minimap rendered for {len(csv_drivers)} driver(s)")
         return {'FINISHED'}
 
 

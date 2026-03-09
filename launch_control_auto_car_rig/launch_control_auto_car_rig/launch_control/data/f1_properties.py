@@ -423,6 +423,14 @@ class F1_Pipeline_Props(bpy.types.PropertyGroup):
         min=0.0,
         max=1.0,
     )
+    correction_inset: FloatProperty(
+        name="Edge Inset",
+        description="Positive pushes inward from edge, negative pushes outward (meters)",
+        default=1.0,
+        soft_min=-10.0,
+        soft_max=10.0,
+        unit='LENGTH',
+    )
     normalize_z_value: FloatProperty(
         name="Target Z",
         description="Target height when flattening path vertices",

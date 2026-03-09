@@ -1,5 +1,6 @@
 import bpy
 from ..operators.F1_HiFi_Baker_Pro import F1_OT_InstallDeps, MISSING_DEPS
+from ..operators.f1_trail import F1_OT_refresh_trails, F1_OT_bake_trails
 from ..operators.f1_pipeline import (
     OBJECT_OT_f1_generate_scene,
     OBJECT_OT_f1_add_lap_to_queue,
@@ -14,6 +15,18 @@ from ..operators.f1_pipeline import (
     OBJECT_OT_f1_clear_diagnostic,
     OBJECT_OT_f1_flatten_z,
     OBJECT_OT_f1_snap_z_to_track,
+    OBJECT_OT_f1_render_minimap,
+)
+from ..operators.heli_cam import (
+    F1_OT_create_heli_cam,
+    F1_OT_remove_heli_cam,
+    F1_OT_heli_set_marker,
+    F1_OT_heli_delete_marker,
+    F1_OT_heli_clear_markers,
+    F1_OT_heli_prev_marker,
+    F1_OT_heli_next_marker,
+    HELI_CAM_NAME,
+    get_markers,
 )
 from ..data.f1_properties import _get_event
 
@@ -122,6 +135,11 @@ class PANEL_PT_F1_Studio(bpy.types.Panel):
         row.operator(OBJECT_OT_f1_generate_scene.bl_idname,
                      icon='RENDER_ANIMATION', text="GENERATE SCENE")
 
+        row = layout.row()
+        row.scale_y = 1.3
+        row.operator(OBJECT_OT_f1_render_minimap.bl_idname,
+                     icon='SEQ_PREVIEW', text="Render Minimap Only")
+
         # ── 5. TRACK ALIGNMENT ─────────────────────────────────────────
         layout.separator()
         box = layout.box()
@@ -159,6 +177,11 @@ class PANEL_PT_F1_Studio(bpy.types.Panel):
 
         box.separator()
         box.prop(props, "trail_z_offset")
+        row = box.row(align=True)
+        row.operator(F1_OT_refresh_trails.bl_idname,
+                     icon='FILE_REFRESH', text="Refresh Trails")
+        row.operator(F1_OT_bake_trails.bl_idname,
+                     icon='REC', text="Bake Trails")
 
         # XY correction
         row = box.row(align=True)
@@ -176,6 +199,7 @@ class PANEL_PT_F1_Studio(bpy.types.Panel):
         col = box.column(align=True)
         col.prop(props, "correction_falloff")
         col.prop(props, "correction_strength")
+        col.prop(props, "correction_inset")
 
         # ── 7. PATH SCULPT TOOLS ────────────────────────────────────────
         layout.separator()
@@ -188,6 +212,64 @@ class PANEL_PT_F1_Studio(bpy.types.Panel):
         box.prop(scene, "f1_brush_mode", text="Mode")
         box.operator("f1.path_brush", text="Sculpt Path", icon='SCULPTMODE_HLT')
         box.label(text="M=Push/Pull  Scroll=Radius  Shift+Scroll=Strength", icon='INFO')
+
+        # ── 8. HELI-CAM ───────────────────────────────────────────────
+        layout.separator()
+        box = layout.box()
+        box.label(text="Helicopter Camera", icon='OUTLINER_OB_CAMERA')
+
+        heli_exists = bpy.data.objects.get(HELI_CAM_NAME) is not None
+        if heli_exists:
+            row = box.row(align=True)
+            row.label(text="Heli-Cam active", icon='CHECKMARK')
+            row.operator(F1_OT_remove_heli_cam.bl_idname,
+                         text="", icon='TRASH')
+            box.prop(scene, '["_heli_smoothing"]', text="Smoothing")
+
+            # Adjustment sliders
+            box.separator()
+            box.label(text="Adjustments:", icon='MODIFIER')
+            col = box.column(align=True)
+            col.prop(scene, "heli_adj_height")
+            col.prop(scene, "heli_adj_angle")
+            col.prop(scene, "heli_adj_distance")
+            col.prop(scene, "heli_adj_focal")
+
+            # Marker controls
+            box.separator()
+            row = box.row(align=True)
+            row.scale_y = 1.3
+            row.operator(F1_OT_heli_set_marker.bl_idname,
+                         icon='KEYFRAME_HLT', text="Set Marker")
+            row.operator(F1_OT_heli_delete_marker.bl_idname,
+                         icon='KEYFRAME', text="Delete")
+
+            row = box.row(align=True)
+            row.operator(F1_OT_heli_prev_marker.bl_idname,
+                         icon='PREV_KEYFRAME', text="")
+            row.operator(F1_OT_heli_next_marker.bl_idname,
+                         icon='NEXT_KEYFRAME', text="")
+            row.operator(F1_OT_heli_clear_markers.bl_idname,
+                         icon='TRASH', text="Clear All")
+
+            markers = get_markers(scene)
+            if markers:
+                frame = scene.frame_current
+                on_marker = any(m["frame"] == frame for m in markers)
+                frames_str = ", ".join(
+                    str(m["frame"]) for m in markers[:12])
+                if len(markers) > 12:
+                    frames_str += f" ... ({len(markers)} total)"
+                box.label(text=f"Markers: {frames_str}",
+                          icon='KEYTYPE_KEYFRAME_VEC')
+                if on_marker:
+                    box.label(text=f"On marker at frame {frame}",
+                              icon='KEYTYPE_JITTER_VEC')
+        else:
+            row = box.row()
+            row.scale_y = 1.5
+            row.operator(F1_OT_create_heli_cam.bl_idname,
+                         icon='OUTLINER_OB_CAMERA', text="Create Heli-Cam")
 
 
 classes = [PANEL_PT_F1_Studio]

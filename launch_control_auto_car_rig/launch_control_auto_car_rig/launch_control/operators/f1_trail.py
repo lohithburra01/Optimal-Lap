@@ -167,18 +167,32 @@ def setup_trail_for_driver(driver_code, constructor_color_hex, rig_object, curve
     print(f"[F1Trail] Trail created for {driver_code} ({rig_object.name}) | color: {constructor_color_hex}")
 
 
-def _get_car_world_pos(rig):
-    """Get the car's actual world position from the bone that follows the path."""
-    bone = rig.pose.bones.get(CAR_BONE)
+def _get_car_world_pos(rig, depsgraph=None):
+    """Get the car's actual world position from the evaluated bone."""
+    if depsgraph is not None:
+        rig_eval = rig.evaluated_get(depsgraph)
+    else:
+        rig_eval = rig
+    bone = rig_eval.pose.bones.get(CAR_BONE)
     if bone:
-        return (rig.matrix_world @ bone.matrix).translation.copy()
-    return rig.matrix_world.translation.copy()
+        return (rig_eval.matrix_world @ bone.matrix).translation.copy()
+    return rig_eval.matrix_world.translation.copy()
 
 
 def f1_trail_update(scene, depsgraph=None):
+    if depsgraph is None:
+        try:
+            depsgraph = bpy.context.evaluated_depsgraph_get()
+        except Exception:
+            pass
+
     for obj in scene.objects:
         if not obj.name.startswith("LC_Trail_") or obj.type != 'CURVE':
             continue
+        if obj.data.animation_data and obj.data.animation_data.action:
+            fcs = obj.data.animation_data.action.fcurves
+            if any(fc.data_path == "bevel_factor_end" for fc in fcs):
+                continue
         rig_name = obj.get("rig_name")
         if not rig_name:
             continue
@@ -186,20 +200,50 @@ def f1_trail_update(scene, depsgraph=None):
         if not rig:
             continue
         try:
-            car_pos = _get_car_world_pos(rig)
+            car_pos = _get_car_world_pos(rig, depsgraph)
             fraction = _find_car_fraction_on_trail(obj, car_pos)
-            obj.data.bevel_factor_end = min(max(fraction * SAFETY_MARGIN, 0.0), 1.0)
+            new_val = min(max(fraction * SAFETY_MARGIN, 0.0), 1.0)
+            obj.data.bevel_factor_end = new_val
+            obj.data.update_tag()
         except Exception as e:
             print(f"[F1Trail] Handler error: {e}")
 
 
+def _purge_handler(handler_list, name):
+    for h in handler_list[:]:
+        if getattr(h, '__name__', '') == name:
+            handler_list.remove(h)
+
+
 def register_trail_handler():
-    handlers = bpy.app.handlers.frame_change_post
-    for h in handlers[:]:
-        if getattr(h, '__name__', '') == 'f1_trail_update':
-            handlers.remove(h)
-    handlers.append(f1_trail_update)
-    print("[F1Trail] Handler registered")
+    _purge_handler(bpy.app.handlers.frame_change_post, 'f1_trail_update')
+    _purge_handler(bpy.app.handlers.frame_change_pre, 'f1_trail_update_pre')
+    _purge_handler(bpy.app.handlers.render_pre, '_f1_trail_render_init')
+    _purge_handler(bpy.app.handlers.render_complete, '_f1_trail_render_done')
+    _purge_handler(bpy.app.handlers.render_cancel, '_f1_trail_render_done')
+
+    bpy.app.handlers.frame_change_post.append(f1_trail_update)
+
+    def _f1_trail_render_init(scene):
+        _purge_handler(bpy.app.handlers.frame_change_pre, 'f1_trail_update_pre')
+        bpy.app.handlers.frame_change_pre.append(f1_trail_update_pre)
+
+    def _f1_trail_render_done(scene):
+        _purge_handler(bpy.app.handlers.frame_change_pre, 'f1_trail_update_pre')
+
+    bpy.app.handlers.render_pre.append(_f1_trail_render_init)
+    bpy.app.handlers.render_complete.append(_f1_trail_render_done)
+    bpy.app.handlers.render_cancel.append(_f1_trail_render_done)
+    print("[F1Trail] Handler registered (viewport + render)")
+
+
+def f1_trail_update_pre(scene, depsgraph=None):
+    """Pre-frame pass during renders: set bevel_factor_end BEFORE the
+    render engine evaluates the depsgraph, using the previous frame's
+    evaluated bone positions as a close-enough approximation.  The post
+    handler will correct it for the viewport, but this ensures the render
+    never sees stale values."""
+    f1_trail_update(scene, depsgraph)
 
 
 def sync_trail_geometry_from_path(path_obj, trail_obj, rig_obj=None, scene=None):
@@ -271,8 +315,78 @@ def sync_all_trails_from_paths(scene):
             sync_trail_geometry_from_path(path_obj, trail, car.rig_object, scene)
 
 
+class F1_OT_refresh_trails(bpy.types.Operator):
+    bl_idname = "f1.refresh_trails"
+    bl_label = "Refresh Trails"
+    bl_description = "Re-sync trail geometry and re-register the animation handler"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        scene = context.scene
+        register_trail_handler()
+        sync_all_trails_from_paths(scene)
+        f1_trail_update(scene)
+        self.report({'INFO'}, "Trails refreshed and animation handler re-registered")
+        return {'FINISHED'}
+
+
+class F1_OT_bake_trails(bpy.types.Operator):
+    bl_idname = "f1.bake_trails"
+    bl_label = "Bake Trail Animation"
+    bl_description = (
+        "Bake trail animation into keyframes (recommended before "
+        "rendering for guaranteed frame-accurate results)"
+    )
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        scene = context.scene
+        frame_start = scene.frame_start
+        frame_end = scene.frame_end
+        original_frame = scene.frame_current
+
+        trails = [
+            obj for obj in scene.objects
+            if obj.name.startswith("LC_Trail_") and obj.type == 'CURVE'
+            and obj.get("rig_name")
+        ]
+        if not trails:
+            self.report({'WARNING'}, "No trails found to bake")
+            return {'CANCELLED'}
+
+        register_trail_handler()
+
+        for trail in trails:
+            curve_data = trail.data
+            if curve_data.animation_data and curve_data.animation_data.action:
+                curve_data.animation_data.action.fcurves.clear()
+
+        for frame in range(frame_start, frame_end + 1):
+            scene.frame_set(frame)
+            for trail in trails:
+                trail.data.keyframe_insert(
+                    data_path="bevel_factor_end", frame=frame
+                )
+
+        for trail in trails:
+            anim = trail.data.animation_data
+            if anim and anim.action:
+                for fc in anim.action.fcurves:
+                    if fc.data_path == "bevel_factor_end":
+                        for kp in fc.keyframe_points:
+                            kp.interpolation = 'LINEAR'
+
+        scene.frame_set(original_frame)
+        self.report(
+            {'INFO'},
+            f"Baked {len(trails)} trail(s) over frames {frame_start}–{frame_end}"
+        )
+        return {'FINISHED'}
+
+
 def unregister_trail_handler():
-    handlers = bpy.app.handlers.frame_change_post
-    for h in handlers[:]:
-        if getattr(h, '__name__', '') == 'f1_trail_update':
-            handlers.remove(h)
+    _purge_handler(bpy.app.handlers.frame_change_post, 'f1_trail_update')
+    _purge_handler(bpy.app.handlers.frame_change_pre, 'f1_trail_update_pre')
+    _purge_handler(bpy.app.handlers.render_pre, '_f1_trail_render_init')
+    _purge_handler(bpy.app.handlers.render_complete, '_f1_trail_render_done')
+    _purge_handler(bpy.app.handlers.render_cancel, '_f1_trail_render_done')
