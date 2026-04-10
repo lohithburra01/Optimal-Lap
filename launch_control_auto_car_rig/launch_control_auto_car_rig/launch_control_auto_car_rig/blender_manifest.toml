@@ -1,0 +1,24 @@
+schema_version = "1.0.0"
+
+
+id = "launch_control_auto_car_rig"
+version = "2.2.0"
+name = "Hot Lap – F1 Race Replay Studio"
+tagline = "Generate cinematic F1 race replays from real telemetry data."
+type = "add-on"
+
+maintainer = "Daniel Vesterbaek, Gabriela Rodriguez, Blastframe"
+website = "https://launch-control.org"
+tags = ["Rigging", "Animation", "Physics"]
+
+blender_version_min = "4.2.0"
+
+# License conforming to https://spdx.org/licenses/ (use "SPDX: prefix)
+# https://docs.blender.org/manual/en/dev/advanced/extensions/licenses.html
+license = [
+  "SPDX:GPL-3.0-or-later",
+]
+
+copyright = [
+  "2022-2025 Daniel Vesterbaek",
+]

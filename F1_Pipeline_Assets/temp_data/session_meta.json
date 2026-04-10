@@ -1,22 +1,17 @@
 {
-  "year": 2024,
-  "gp": "Australian Grand Prix",
-  "session": "Qualifying",
+  "year": 2026,
+  "gp": "Chinese Grand Prix",
+  "session": "Q",
   "drivers": {
-    "NOR": {
+    "ANT": {
       "compound": "SOFT",
-      "lap_time": 76.315,
-      "team": "McLaren"
+      "lap_time": 92.064,
+      "team": "Mercedes"
     },
-    "PIA": {
+    "RUS": {
       "compound": "SOFT",
-      "lap_time": 76.572,
-      "team": "McLaren"
-    },
-    "VER": {
-      "compound": "SOFT",
-      "lap_time": 75.915,
-      "team": "Red Bull Racing"
+      "lap_time": 92.286,
+      "team": "Mercedes"
     }
   }
 }
