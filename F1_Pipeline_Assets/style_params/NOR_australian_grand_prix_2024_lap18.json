@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "source": {
+    "driver": "NOR",
+    "season": "2024",
+    "grand_prix": "Australian Grand Prix",
+    "session": "Q",
+    "lap": 18,
+    "extracted_at": "2026-04-19T16:21:36.904123+00:00"
+  },
+  "style_params": {
+    "apex_phase": 0.0014818196310305704,
+    "apex_tightness": 0.7427481494148886,
+    "entry_width": 0.0,
+    "exit_width": 0.0,
+    "vu_shape": 0.8333333333333333,
+    "straight_bias": 0.0,
+    "smoothness": 0.0,
+    "lr_asymmetry": 0.004082321804906442
+  },
+  "notes": "entry_width, exit_width, straight_bias default to 0 when no centerline is available \u2014 the standalone addon refines them."
+}

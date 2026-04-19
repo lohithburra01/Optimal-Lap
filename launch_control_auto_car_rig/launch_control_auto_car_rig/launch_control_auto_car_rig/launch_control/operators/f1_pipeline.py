@@ -1592,268 +1592,6 @@ def _apply_style_to_ideal(target_frac, segments, styles, style_blend=0.5):
         corner_idx += 1
 
 
-def _build_racing_line_qp(path_obj, track_obj, strength=0.8, style_blend=0.5):
-    """
-    Build an ideal racing line using TUMFTM QP optimizer + Kabsch alignment.
-    
-    Requires TRACK_CENTER_FIXED curve in the scene.
-    Requires trajectory_planning_helpers installed.
-    
-    strength:    how much to move toward aligned position (0=keep GPS, 1=full aligned)
-    style_blend: racing line blend in Kabsch step (0=raw GPS, 1=fully snapped)
-    
-    Returns: number of centerline points processed (or 0 on failure)
-    """
-    try:
-        import numpy as np
-        import math
-        from mathutils import Vector
-        from scipy.ndimage import gaussian_filter1d
-    except ImportError as e:
-        print(f"  [QP Racing Line] Missing dependency: {e}")
-        return 0
-
-    try:
-        import trajectory_planning_helpers as tph
-    except ImportError:
-        print("  [QP Racing Line] trajectory_planning_helpers not installed. Skipping.")
-        return 0
-
-    # --- Check centerline ---
-    cl_obj = bpy.data.objects.get("TRACK_CENTER_FIXED")
-    if not cl_obj:
-        print("  [QP Racing Line] TRACK_CENTER_FIXED not found. Skipping.")
-        return 0
-
-    # --- Extract centerline ---
-    sp = cl_obj.data.splines[0]
-    n = len(sp.points)
-    cl = np.zeros((n, 2))
-    for i in range(n):
-        co = cl_obj.matrix_world @ Vector(sp.points[i].co[:3])
-        cl[i] = [co.x, co.y]
-
-    # --- Tangents and normals from centerline ---
-    tangents = np.zeros((n, 2))
-    for i in range(n):
-        diff = cl[(i + 3) % n] - cl[(i - 3) % n]
-        nm = np.linalg.norm(diff)
-        tangents[i] = diff / nm if nm > 1e-8 else [1, 0]
-
-    normals = np.zeros((n, 2))
-    for i in range(n):
-        normals[i] = [-tangents[i][1], tangents[i][0]]
-
-    # --- Raycast real track widths against Track mesh ---
-    inv = track_obj.matrix_world.inverted()
-    ray_dir = (inv.to_3x3() @ Vector((0, 0, -1))).normalized()
-
-    inset = 0.10
-    w_tr_left  = np.zeros(n)
-    w_tr_right = np.zeros(n)
-
-    print("  [QP Racing Line] Raycasting track widths...")
-    for i in range(n):
-        pt = cl[i]
-        # Left
-        last_hit = 0.0
-        for si in range(1, 200):
-            d = si * 0.15
-            test = pt + normals[i] * d
-            origin = Vector((test[0], test[1], 10000.0))
-            hit, _, _, _ = track_obj.ray_cast(inv @ origin, ray_dir)
-            if hit:
-                last_hit = d
-            else:
-                break
-        w_tr_left[i] = max(last_hit - inset, 0.05)
-
-        # Right
-        last_hit = 0.0
-        for si in range(1, 200):
-            d = si * 0.15
-            test = pt - normals[i] * d
-            origin = Vector((test[0], test[1], 10000.0))
-            hit, _, _, _ = track_obj.ray_cast(inv @ origin, ray_dir)
-            if hit:
-                last_hit = d
-            else:
-                break
-        w_tr_right[i] = max(last_hit - inset, 0.05)
-
-    # --- Build reftrack and run TUMFTM optimizer ---
-    cl_closed = np.vstack([cl, cl[0]])
-    reftrack  = np.column_stack([cl, w_tr_right, w_tr_left])
-
-    coeffs_x, coeffs_y, A, _ = tph.calc_splines.calc_splines(
-        path=cl_closed, use_dist_scaling=True
-    )
-    ind_spls = np.arange(len(coeffs_x))
-    t_spls   = np.zeros(len(coeffs_x))
-
-    psi, kappa = tph.calc_head_curv_an.calc_head_curv_an(
-        coeffs_x=coeffs_x, coeffs_y=coeffs_y,
-        ind_spls=ind_spls, t_spls=t_spls,
-        calc_curv=True, calc_dcurv=False
-    )[:2]
-
-    normvec_normalized = tph.calc_normal_vectors.calc_normal_vectors(psi=psi)
-
-    print("  [QP Racing Line] Running TUMFTM optimizer...")
-    alpha_mincurv, _ = tph.opt_min_curv.opt_min_curv(
-        reftrack=reftrack,
-        normvectors=normvec_normalized,
-        A=A,
-        kappa_bound=0.50,
-        w_veh=2.0,
-        print_debug=False,
-        plot_debug=False,
-        closed=True
-    )
-
-    raceline = tph.create_raceline.create_raceline(
-        refline=cl,
-        normvectors=normvec_normalized,
-        alpha=alpha_mincurv,
-        stepsize_interp=2.0
-    )[0]
-
-    # --- Store Q_RACING_LINE in scene for reference ---
-    rl_name = "Q_RACING_LINE"
-    for d in [bpy.data.objects, bpy.data.curves]:
-        if rl_name in d:
-            d.remove(d[rl_name], do_unlink=True)
-    rl_curve = bpy.data.curves.new(rl_name, 'CURVE')
-    rl_curve.dimensions = '3D'
-    rl_sp = rl_curve.splines.new('POLY')
-    rl_sp.points.add(len(raceline) - 1)
-    for i in range(len(raceline)):
-        rl_sp.points[i].co = (raceline[i, 0], raceline[i, 1], 0, 1)
-    rl_sp.use_cyclic_u = True
-    rl_obj = bpy.data.objects.new(rl_name, rl_curve)
-    bpy.context.collection.objects.link(rl_obj)
-    print(f"  [QP Racing Line] Q_RACING_LINE created: {len(raceline)} pts")
-
-    # --- Extract GPS driving path points ---
-    coords, _, closed = _extract_path_geometry(path_obj)
-    P_raw = np.zeros((len(coords), 3))
-    P_raw[:, :2] = coords
-
-    Q_raw = np.zeros((len(raceline), 3))
-    Q_raw[:, :2] = raceline
-
-    # --- Resample both to N points ---
-    N = 1000
-
-    def resample(pts, n_out):
-        from scipy.interpolate import interp1d
-        mask = np.ones(len(pts), dtype=bool)
-        for i in range(1, len(pts)):
-            if np.linalg.norm(pts[i] - pts[i-1]) < 1e-10:
-                mask[i] = False
-        pts = pts[mask]
-        cl2 = np.vstack((pts, pts[0]))
-        diffs = cl2[1:] - cl2[:-1]
-        dists = np.linalg.norm(diffs, axis=1)
-        cum   = np.concatenate(([0], np.cumsum(dists)))
-        total = cum[-1]
-        targets = np.linspace(0, total, n_out, endpoint=False)
-        ext = np.vstack((pts, pts, pts))
-        exc = np.concatenate((cum[:-1] - total, cum[:-1], cum[:-1] + total))
-        out = np.zeros((n_out, 3))
-        for ax in range(3):
-            f = interp1d(exc, ext[:, ax], kind='cubic')
-            out[:, ax] = f(targets)
-        return out
-
-    P_res = resample(P_raw, N)
-    Q_res = resample(Q_raw, N)
-
-    # --- Cyclic shift search for best Kabsch alignment ---
-    def kabsch(P, Q):
-        cP = P.mean(axis=0)
-        cQ = Q.mean(axis=0)
-        H  = (P - cP).T @ (Q - cQ)
-        U, S, Vt = np.linalg.svd(H)
-        R = Vt.T @ U.T
-        if np.linalg.det(R) < 0:
-            Vt[-1, :] *= -1
-            R = Vt.T @ U.T
-        return R, cQ - R @ cP
-
-    best_rms   = float('inf')
-    best_shift = 0
-    step       = max(1, N // 100)
-
-    for s in range(0, N, step):
-        Q_shifted = np.roll(Q_res, -s, axis=0)
-        R, t = kabsch(P_res, Q_shifted)
-        P_al = (R @ P_res.T).T + t
-        rms  = np.sqrt(((P_al - Q_shifted) ** 2).mean())
-        if rms < best_rms:
-            best_rms   = rms
-            best_shift = s
-
-    for s in range(max(0, best_shift - step), min(N, best_shift + step + 1)):
-        Q_shifted = np.roll(Q_res, -s, axis=0)
-        R, t = kabsch(P_res, Q_shifted)
-        P_al = (R @ P_res.T).T + t
-        rms  = np.sqrt(((P_al - Q_shifted) ** 2).mean())
-        if rms < best_rms:
-            best_rms   = rms
-            best_shift = s
-
-    Q_final  = np.roll(Q_res, -best_shift, axis=0)
-    R, t     = kabsch(P_res, Q_final)
-    P_aligned = (R @ P_raw.T).T + t
-
-    # --- Blend aligned GPS toward racing line ---
-    if style_blend > 0.0:
-        M      = len(P_aligned)
-        K      = len(Q_raw)
-        shift_ratio = best_shift / N
-        window = max(20, int(K * 0.15))
-
-        A_pts    = Q_raw
-        B_pts    = np.roll(Q_raw, -1, axis=0)
-        AB       = B_pts - A_pts
-        AB_sq    = np.sum(AB ** 2, axis=1)
-        AB_sq[AB_sq < 1e-12] = 1e-12
-
-        P_projected = np.zeros((M, 3))
-        for i in range(M):
-            pt  = P_aligned[i]
-            exp_k = int(((i / M) + shift_ratio) * K) % K
-            idx   = np.arange(exp_k - window, exp_k + window + 1) % K
-            AP    = pt - A_pts[idx]
-            t_par = np.clip(np.sum(AP * AB[idx], axis=1) / AB_sq[idx], 0, 1)
-            proj  = A_pts[idx] + t_par[:, np.newaxis] * AB[idx]
-            P_projected[i] = proj[np.argmin(np.sum((pt - proj) ** 2, axis=1))]
-
-        P_out = P_aligned * (1.0 - style_blend) + P_projected * style_blend
-    else:
-        P_out = P_aligned.copy()
-
-    P_out[:, 2] = 0.0
-
-    # --- Write aligned points back onto driving_path in-place ---
-    # This preserves the Follow Path constraint target — car follows automatically
-    points, ptype = _get_path_points(path_obj)
-    inv_mat = path_obj.matrix_world.inverted()
-
-    # Resample P_out to match exact point count of the driving path
-    P_final = resample(P_out, len(points))
-
-    for i in range(len(points)):
-        new_world = Vector((float(P_final[i, 0]), float(P_final[i, 1]), float(P_final[i, 2])))
-        new_local = inv_mat @ new_world
-        _set_point_co(points[i], ptype, new_local)
-
-    path_obj.data.update_tag()
-    print(f"  [QP Racing Line] Done. RMS={best_rms:.2f}. Path updated in-place.")
-    return n
-
-
 def _build_racing_line(path_obj, track_obj, strength=0.8, max_half_width=4.0,
                         style_blend=0.5):
     """
@@ -1951,10 +1689,11 @@ class OBJECT_OT_f1_centerline_correct(bpy.types.Operator):
             if path_obj is None:
                 continue
             
-            corners = _build_racing_line_qp(
+            corners = _build_racing_line(
                 path_obj, track_obj,
                 strength=props.correction_strength,
-                style_blend=props.correction_inset
+                max_half_width=4.0,
+                style_blend=props.correction_inset  # repurpose inset slider as style_blend
             )
             total_corners += corners
             path_count += 1
@@ -2638,6 +2377,168 @@ class OBJECT_OT_f1_render_minimap(Operator):
 
         self.report({'INFO'},
                     f"Minimap rendered for {len(csv_drivers)} driver(s)")
+        return {'FINISHED'}
+
+
+# ==============================================================================
+# DRIVER STYLE EXPORT (bridge to F1 Track Visualizer standalone addon)
+# Purely additive — does not touch any existing pipeline code.
+# ==============================================================================
+class OBJECT_OT_ExportDriverStyle(Operator):
+    bl_idname = "object.export_driver_style"
+    bl_label = "Export Driver Style (JSON)"
+    bl_description = ("Extract the selected driver's racing style from FastF1 "
+                      "telemetry and write a JSON the F1 Track Visualizer addon "
+                      "can ingest")
+
+    def execute(self, context):
+        try:
+            from . import f1_style_extract
+        except ImportError as e:
+            self.report({'ERROR'},
+                        f"Style extractor unavailable (missing dependency: scipy?): {e}")
+            return {'CANCELLED'}
+
+        try:
+            from scipy.ndimage import gaussian_filter1d  # noqa: F401
+        except ImportError:
+            self.report({'ERROR'}, "scipy is required for style extraction")
+            return {'CANCELLED'}
+
+        scene = context.scene
+        props = getattr(scene, "f1_pipeline_props", None)
+        if props is None:
+            self.report({'ERROR'}, "F1 pipeline props not initialised")
+            return {'CANCELLED'}
+
+        try:
+            year_str = props.sel_year
+            race     = props.sel_race
+            session  = props.sel_session
+            driver   = props.sel_driver
+            q_seg    = getattr(props, "sel_q_segment", "Q_ALL") if session == 'Q' else ''
+            year_int = int(year_str)
+        except Exception as e:
+            self.report({'ERROR'}, f"Could not read selection: {e}")
+            return {'CANCELLED'}
+
+        if not driver or driver == 'NONE':
+            self.report({'ERROR'}, "No driver selected")
+            return {'CANCELLED'}
+        if not race or race == 'NONE':
+            self.report({'ERROR'}, "No race selected")
+            return {'CANCELLED'}
+
+        try:
+            from ..data.f1_properties import _get_event
+            event_meta = _get_event(year_str, race)
+        except Exception:
+            event_meta = None
+        is_testing = bool(event_meta and event_meta.get('event_type') == 'testing')
+
+        try:
+            import tempfile
+            import fastf1
+            cache_dir = os.path.join(tempfile.gettempdir(), "fastf1_cache")
+            os.makedirs(cache_dir, exist_ok=True)
+            fastf1.Cache.enable_cache(cache_dir)
+        except ImportError:
+            self.report({'ERROR'}, "fastf1 is not installed")
+            return {'CANCELLED'}
+        except Exception as e:
+            self.report({'ERROR'}, f"FastF1 cache setup failed: {e}")
+            return {'CANCELLED'}
+
+        try:
+            if is_testing:
+                test_number = int(event_meta.get('test_number', 1))
+                day_map = {'Day 1': 1, 'Day 2': 2, 'Day 3': 3, 'Day Best': 1}
+                day = day_map.get(session, 1)
+                fa_session = fastf1.get_testing_session(year_int, test_number, day)
+            else:
+                session_for_baker = _session_key_to_baker(session)
+                fa_session = fastf1.get_session(year_int, race, session_for_baker)
+            fa_session.load(telemetry=True, laps=True, weather=False, messages=False)
+        except Exception as e:
+            self.report({'ERROR'}, f"FastF1 load error: {e}")
+            return {'CANCELLED'}
+
+        try:
+            driver_laps = fa_session.laps.pick_drivers(driver)
+            if session == 'Q' and q_seg in ('Q1', 'Q2', 'Q3'):
+                seg_laps = driver_laps[driver_laps['Q'] == q_seg] if 'Q' in driver_laps.columns else driver_laps
+                if len(seg_laps) > 0:
+                    driver_laps = seg_laps
+            lap = driver_laps.pick_fastest()
+            if lap is None or (hasattr(lap, 'empty') and lap.empty):
+                self.report({'ERROR'}, f"No fastest lap for {driver}")
+                return {'CANCELLED'}
+            tel = lap.get_telemetry()
+        except Exception as e:
+            self.report({'ERROR'}, f"Telemetry fetch failed: {e}")
+            return {'CANCELLED'}
+
+        try:
+            tel = tel.dropna(subset=['X', 'Y'])
+            xs = np.asarray(tel['X'].values, dtype=float)
+            ys = np.asarray(tel['Y'].values, dtype=float)
+            speeds = None
+            if 'Speed' in tel.columns:
+                sp = tel['Speed'].values
+                if len(sp) == len(xs):
+                    speeds = np.asarray(sp, dtype=float)
+        except Exception as e:
+            self.report({'ERROR'}, f"Telemetry columns missing: {e}")
+            return {'CANCELLED'}
+
+        try:
+            params = f1_style_extract.extract_style_params(xs, ys, speeds)
+        except Exception as e:
+            self.report({'ERROR'}, f"Style extraction failed: {e}")
+            return {'CANCELLED'}
+
+        try:
+            db = F1_Database_Manager()
+            base_dir = os.path.join(db.root, "style_params")
+            try:
+                os.makedirs(base_dir, exist_ok=True)
+            except Exception:
+                base_dir = None
+            if base_dir is None or not os.path.isdir(os.path.dirname(base_dir) or db.root):
+                import tempfile
+                base_dir = os.path.join(tempfile.gettempdir(), "f1_style_params")
+                os.makedirs(base_dir, exist_ok=True)
+        except Exception:
+            import tempfile
+            base_dir = os.path.join(tempfile.gettempdir(), "f1_style_params")
+            os.makedirs(base_dir, exist_ok=True)
+
+        try:
+            lap_num = int(lap['LapNumber'])
+        except Exception:
+            lap_num = None
+        lap_label = f"lap{lap_num}" if lap_num else "lapfastest"
+
+        gp_slug = race.lower().replace(" ", "_")
+        filename = f"{driver}_{gp_slug}_{year_str}_{lap_label}.json"
+        out_path = os.path.join(base_dir, filename)
+
+        try:
+            written_path = f1_style_extract.write_style_json(
+                params, out_path,
+                meta={
+                    "driver":     driver,
+                    "season":     year_str,
+                    "grand_prix": race,
+                    "session":    session,
+                    "lap":        lap_num if lap_num is not None else "fastest",
+                },
+            )
+        except Exception as e:
+            self.report({'ERROR'}, f"Could not write style JSON: {e}")
+            return {'CANCELLED'}
+
+        self.report({'INFO'}, f"Style JSON: {written_path}")
         return {'FINISHED'}
 
 

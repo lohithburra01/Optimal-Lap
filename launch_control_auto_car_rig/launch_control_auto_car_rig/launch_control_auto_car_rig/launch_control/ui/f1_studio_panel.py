@@ -18,6 +18,7 @@ from ..operators.f1_pipeline import (
     OBJECT_OT_f1_render_minimap,
     OBJECT_OT_f1_apex_correct,
     OBJECT_OT_f1_centerline_correct,
+    OBJECT_OT_ExportDriverStyle,
 )
 from ..operators.heli_cam import (
     F1_OT_create_heli_cam,
@@ -137,6 +138,12 @@ class PANEL_PT_F1_Studio(bpy.types.Panel):
         row.operator(OBJECT_OT_f1_generate_scene.bl_idname,
                      icon='RENDER_ANIMATION', text="GENERATE SCENE")
 
+        layout.separator()
+        row = layout.row()
+        row.scale_y = 1.3
+        row.operator(OBJECT_OT_ExportDriverStyle.bl_idname,
+                     icon='EXPORT', text="Export Driver Style (JSON)")
+
         row = layout.row()
         row.scale_y = 1.3
         row.operator(OBJECT_OT_f1_render_minimap.bl_idname,
@@ -189,7 +196,7 @@ class PANEL_PT_F1_Studio(bpy.types.Panel):
         row = box.row()
         row.scale_y = 1.5
         row.operator(OBJECT_OT_f1_centerline_correct.bl_idname,
-                     icon='SNAP_MIDPOINT', text="Align to Racing Line (TUMFTM)")
+                     icon='SNAP_MIDPOINT', text="Build Racing Line")
         box.separator()
 
         row = box.row(align=True)

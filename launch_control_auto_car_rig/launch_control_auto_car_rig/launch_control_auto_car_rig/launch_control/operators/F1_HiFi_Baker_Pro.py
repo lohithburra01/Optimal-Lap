@@ -363,7 +363,7 @@ def generate_telemetry_csv(year, gp, session_type, drivers, settings):
 # ==============================================================================
 # 6. MINIMAP RENDERER
 # ==============================================================================
-def generate_minimap_frames(session, drivers, exports_dir, ref_driver, year, event):
+def generate_minimap_frames(session, drivers, exports_dir, ref_driver, year, event, session_type=None):
     
     TEAM_COLORS = {
         'Red Bull Racing': '#3671C6',
@@ -408,7 +408,27 @@ def generate_minimap_frames(session, drivers, exports_dir, ref_driver, year, eve
                     
                     # Assuming strict match logic for now based on instruction "Find the entry matching year and event name"
                     if event in full_db[year_str]:
-                        race_drivers_db = full_db[year_str][event]
+                        event_node = full_db[year_str][event]
+                        # JSON structure: { YEAR: { EVENT: { SESSION: [drivers] } } }
+                        # Pick the requested session; fall back to merging all sessions.
+                        if isinstance(event_node, dict):
+                            if session_type and session_type in event_node:
+                                race_drivers_db = event_node[session_type]
+                            else:
+                                seen = set()
+                                merged = []
+                                for sess_list in event_node.values():
+                                    if not isinstance(sess_list, list):
+                                        continue
+                                    for entry in sess_list:
+                                        if isinstance(entry, dict):
+                                            code = entry.get('code')
+                                            if code and code not in seen:
+                                                seen.add(code)
+                                                merged.append(entry)
+                                race_drivers_db = merged
+                        elif isinstance(event_node, list):
+                            race_drivers_db = event_node
                     else:
                         print(f"Event '{event}' not found in database for {year_str}.")
         except Exception as e:
@@ -829,7 +849,7 @@ def generate_multirail_data(year, gp, session_type, drivers, settings):
 
     # CALL MINIMAP GENERATOR (if enabled)
     if settings.get('render_minimap', True):
-        generate_minimap_frames(session, drivers, exports_dir, ref_driver, year, gp)
+        generate_minimap_frames(session, drivers, exports_dir, ref_driver, year, gp, session_type)
     else:
         print("[F1 Baker] Minimap rendering skipped (disabled in settings)")
 

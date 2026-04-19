@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python *)",
+      "Bash(cp /c/Users/91910/Downloads/cricket/f1_hot_lap/launch_control_auto_car_rig/launch_control_auto_car_rig/launch_control_auto_car_rig/launch_control/operators/f1_style_extract.py '/c/Users/91910/AppData/Roaming/Blender Foundation/Blender/4.5/extensions/user_default/launch_control_auto_car_rig/launch_control/operators/f1_style_extract.py')",
+      "Bash(cp /c/Users/91910/Downloads/cricket/f1_hot_lap/launch_control_auto_car_rig/launch_control_auto_car_rig/launch_control_auto_car_rig/launch_control/operators/f1_pipeline.py '/c/Users/91910/AppData/Roaming/Blender Foundation/Blender/4.5/extensions/user_default/launch_control_auto_car_rig/launch_control/operators/f1_pipeline.py')",
+      "Bash(cp /c/Users/91910/Downloads/cricket/f1_hot_lap/launch_control_auto_car_rig/launch_control_auto_car_rig/launch_control_auto_car_rig/launch_control/operators/__init__.py '/c/Users/91910/AppData/Roaming/Blender Foundation/Blender/4.5/extensions/user_default/launch_control_auto_car_rig/launch_control/operators/__init__.py')",
+      "Bash(cp /c/Users/91910/Downloads/cricket/f1_hot_lap/launch_control_auto_car_rig/launch_control_auto_car_rig/launch_control_auto_car_rig/launch_control/ui/f1_studio_panel.py '/c/Users/91910/AppData/Roaming/Blender Foundation/Blender/4.5/extensions/user_default/launch_control_auto_car_rig/launch_control/ui/f1_studio_panel.py')",
+      "Read(//c/Users/91910/AppData/Roaming/Blender Foundation/Blender/4.5/extensions/user_default/launch_control_auto_car_rig/launch_control/ui/**)"
+    ]
+  }
+}

@@ -74,6 +74,7 @@ classes_tuple = (
     f1_pipeline.OBJECT_OT_f1_flatten_z,
     f1_pipeline.OBJECT_OT_f1_snap_z_to_track,
     f1_pipeline.OBJECT_OT_f1_render_minimap,
+    f1_pipeline.OBJECT_OT_ExportDriverStyle,
     heli_cam.F1_OT_create_heli_cam,
     heli_cam.F1_OT_remove_heli_cam,
     heli_cam.F1_OT_heli_set_marker,
