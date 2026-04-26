@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "source": {
+    "driver": "VER",
+    "season": "2024",
+    "grand_prix": "Bahrain Grand Prix",
+    "session": "FP1",
+    "lap": 11,
+    "extracted_at": "2026-04-19T17:12:00.848594+00:00"
+  },
+  "style_params": {
+    "apex_phase": 0.3703881187011122,
+    "apex_tightness": 0.9156755505431783,
+    "entry_width": 0.0,
+    "exit_width": 0.0,
+    "vu_shape": 0.711892797319933,
+    "straight_bias": 0.0,
+    "smoothness": 0.0,
+    "lr_asymmetry": -0.07879392355915503
+  },
+  "notes": "entry_width, exit_width, straight_bias default to 0 when no centerline is available \u2014 the standalone addon refines them."
+}
