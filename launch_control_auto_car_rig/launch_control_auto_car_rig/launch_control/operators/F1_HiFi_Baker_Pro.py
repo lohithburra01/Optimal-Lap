@@ -19,6 +19,7 @@ _f1_mod_path = _get_f1_modules_path()
 if _f1_mod_path and os.path.isdir(_f1_mod_path) and _f1_mod_path not in sys.path:
     sys.path.insert(0, _f1_mod_path)
 
+import math
 import numpy as np
 import tempfile
 
@@ -40,7 +41,7 @@ try:
         import fastf1
         import pandas as pd
         from scipy.interpolate import interp1d, splprep, splev
-        from scipy.signal import correlate, medfilt
+        from scipy.signal import correlate, medfilt, savgol_filter
         warnings.simplefilter(action='ignore')
 except Exception as e:
     print(f"F1 Baker: Dependencies present but import failed: {e}")
@@ -362,7 +363,7 @@ def generate_telemetry_csv(year, gp, session_type, drivers, settings):
 # ==============================================================================
 # 6. MINIMAP RENDERER
 # ==============================================================================
-def generate_minimap_frames(session, drivers, exports_dir, ref_driver, year, event):
+def generate_minimap_frames(session, drivers, exports_dir, ref_driver, year, event, session_type=None):
     
     TEAM_COLORS = {
         'Red Bull Racing': '#3671C6',
@@ -407,7 +408,27 @@ def generate_minimap_frames(session, drivers, exports_dir, ref_driver, year, eve
                     
                     # Assuming strict match logic for now based on instruction "Find the entry matching year and event name"
                     if event in full_db[year_str]:
-                        race_drivers_db = full_db[year_str][event]
+                        event_node = full_db[year_str][event]
+                        # JSON structure: { YEAR: { EVENT: { SESSION: [drivers] } } }
+                        # Pick the requested session; fall back to merging all sessions.
+                        if isinstance(event_node, dict):
+                            if session_type and session_type in event_node:
+                                race_drivers_db = event_node[session_type]
+                            else:
+                                seen = set()
+                                merged = []
+                                for sess_list in event_node.values():
+                                    if not isinstance(sess_list, list):
+                                        continue
+                                    for entry in sess_list:
+                                        if isinstance(entry, dict):
+                                            code = entry.get('code')
+                                            if code and code not in seen:
+                                                seen.add(code)
+                                                merged.append(entry)
+                                race_drivers_db = merged
+                        elif isinstance(event_node, list):
+                            race_drivers_db = event_node
                     else:
                         print(f"Event '{event}' not found in database for {year_str}.")
         except Exception as e:
@@ -537,7 +558,120 @@ def generate_minimap_frames(session, drivers, exports_dir, ref_driver, year, eve
 
 
 # ==============================================================================
-# 4. MULTI-RAIL GENERATOR (ANALYTICAL DERIVATIVES)
+# 4a. TRACK GEOMETRY HELPERS
+# ==============================================================================
+
+def _segment_track(speed_array, distance_array):
+    """Classify each point as STRAIGHT or CORNER based on speed threshold.
+
+    Returns list of {'type': 'STRAIGHT'|'CORNER', 'start': int, 'end': int}.
+
+    - Threshold = 80% of max speed.
+    - Morphological close (dilate + erode, iterations=10) fills momentary dips.
+    - Short segments merged into neighbors:
+        STRAIGHT < 30 pts -> absorbed into adjacent corner
+        CORNER   < 10 pts -> absorbed into adjacent straight
+    """
+    from scipy.ndimage import binary_dilation, binary_erosion
+
+    n = len(speed_array)
+    if n == 0:
+        return []
+
+    max_speed = float(np.max(speed_array))
+    if max_speed < 1e-6:
+        return [{'type': 'CORNER', 'start': 0, 'end': n - 1}]
+
+    is_straight = speed_array > max_speed * 0.80
+
+    # Morphological close: fill small gaps inside straights
+    is_straight = binary_dilation(is_straight, iterations=10)
+    is_straight = binary_erosion(is_straight,  iterations=10)
+
+    # Build contiguous runs
+    raw_segs  = []
+    cur_type  = 'STRAIGHT' if is_straight[0] else 'CORNER'
+    seg_start = 0
+    for i in range(1, n):
+        t = 'STRAIGHT' if is_straight[i] else 'CORNER'
+        if t != cur_type:
+            raw_segs.append({'type': cur_type, 'start': seg_start, 'end': i - 1})
+            cur_type  = t
+            seg_start = i
+    raw_segs.append({'type': cur_type, 'start': seg_start, 'end': n - 1})
+
+    # Merge short segments
+    MIN_STRAIGHT = 30
+    MIN_CORNER   = 10
+    changed = True
+    while changed:
+        changed = False
+        merged = []
+        i = 0
+        while i < len(raw_segs):
+            seg    = raw_segs[i]
+            length = seg['end'] - seg['start'] + 1
+            too_short = ((seg['type'] == 'STRAIGHT' and length < MIN_STRAIGHT) or
+                         (seg['type'] == 'CORNER'   and length < MIN_CORNER))
+            if too_short:
+                changed = True
+                if merged:
+                    merged[-1]['end'] = seg['end']
+                elif i + 1 < len(raw_segs):
+                    raw_segs[i + 1]['start'] = seg['start']
+                    i += 1
+                    continue
+                else:
+                    merged.append(seg)
+            else:
+                merged.append(seg)
+            i += 1
+        raw_segs = merged
+
+    return raw_segs
+
+
+def _correct_straights(points_x, points_y, segments, blend_points=12):
+    """Linearize STRAIGHT segments in-place with cosine blend at each end.
+
+    For every STRAIGHT segment:
+      1. Linear interpolation from entry to exit point.
+      2. Cosine blend over blend_points at each end.
+    Arrays are modified in-place.
+    """
+    n      = len(points_x)
+    orig_x = points_x.copy()
+    orig_y = points_y.copy()
+
+    for seg in segments:
+        if seg['type'] != 'STRAIGHT':
+            continue
+        s       = seg['start']
+        e       = min(seg['end'], n - 1)
+        seg_len = e - s
+        if seg_len < 2:
+            continue
+
+        bp       = min(blend_points, seg_len // 2)
+        linear_x = np.linspace(orig_x[s], orig_x[e], seg_len + 1)
+        linear_y = np.linspace(orig_y[s], orig_y[e], seg_len + 1)
+
+        for j in range(seg_len + 1):
+            gi = s + j
+            if gi >= n:
+                break
+            if j < bp:
+                t = 0.5 * (1.0 - math.cos(math.pi * j / bp))
+            elif j > seg_len - bp:
+                t = 0.5 * (1.0 - math.cos(math.pi * (seg_len - j) / bp))
+            else:
+                t = 1.0
+            points_x[gi] = orig_x[gi] * (1.0 - t) + linear_x[j] * t
+            points_y[gi] = orig_y[gi] * (1.0 - t) + linear_y[j] * t
+
+
+# ==============================================================================
+# 4b. MULTI-RAIL GENERATOR
 # ==============================================================================
 def generate_multirail_data(year, gp, session_type, drivers, settings):
     if MISSING_DEPS:
@@ -594,7 +728,7 @@ def generate_multirail_data(year, gp, session_type, drivers, settings):
 
     # Lock Physics to Distance
     u_vals = ref_data['dist'] / ref_data['dist'].max()
-    smooth_factor = len(path_x) * 10 # Strong smoothing for GPS jitter
+    smooth_factor = len(path_x) * 0.1 # Tight smoothing — close to raw GPS
 
     is_closed = np.linalg.norm(np.array([path_x[0], path_y[0]]) - np.array([path_x[-1], path_y[-1]])) < 50
 
@@ -610,6 +744,7 @@ def generate_multirail_data(year, gp, session_type, drivers, settings):
 
     # 0th Derivative (Position)
     x_pts, y_pts = splev(u_new, tck)
+    dx_pts, dy_pts = splev(u_new, tck, der=1)
 
     base_points = np.column_stack((x_pts, y_pts, np.zeros_like(x_pts)))
 
@@ -617,6 +752,11 @@ def generate_multirail_data(year, gp, session_type, drivers, settings):
     segment_lengths = np.sqrt(np.sum(np.diff(base_points, axis=0)**2, axis=1))
     actual_total_len = np.sum(segment_lengths)
     rail_dist_step = actual_total_len / (num_points - 1)
+
+    # --- PER-DRIVER GPS SPLINES (built once per driver, inside the loop below) ---
+    # Lateral offset system removed. Each driver's XY now comes from their own
+    # GPS trace resampled at u_new. Timing engine (rail_dist_step, f_time_at_dist)
+    # is unchanged and still driven by the reference spline above.
 
     # --- EXPORT ---
     output_dir = settings.get('output_dir', os.path.join(os.path.expanduser("~"), "Downloads"))
@@ -626,60 +766,65 @@ def generate_multirail_data(year, gp, session_type, drivers, settings):
     results_map = {}
 
     for d_idx, d in enumerate(drivers):
-        metrics_display = "Ref (Baseline)"
+        # ── TIMING ENGINE (unchanged) ────────────────────────────────────────
         if d == ref_driver:
-            f_time_at_dist = interp1d(ref_data['dist'], ref_data['time'], kind='linear', fill_value="extrapolate")
-            drv_x_pts, drv_y_pts = x_pts, y_pts
-            drv_dist_step = rail_dist_step
+            f_time_at_dist = interp1d(ref_data['dist'], ref_data['time'],
+                                      kind='linear', fill_value="extrapolate")
         else:
             tgt_data = get_clean_trace(session, d)
             if not tgt_data: continue
             d_axis, final_delta, metrics = calculate_hifi_delta(ref_data, tgt_data)
-
             if d_axis is not None:
-                fid = metrics['fidelity']['fidelity']
-                int_sc = metrics['integrity']['score']
-                metrics_display = f"Fid:{fid:.0f}% Int:{int_sc:.0f}%"
-
-                ref_time_interp = interp1d(ref_data['dist'], ref_data['time'], fill_value="extrapolate")
+                ref_time_interp = interp1d(ref_data['dist'], ref_data['time'],
+                                           fill_value="extrapolate")
                 delta_interp = interp1d(d_axis, final_delta, fill_value="extrapolate")
                 f_time_at_dist = lambda dist_m, _ri=ref_time_interp, _di=delta_interp: float(_ri(dist_m) + _di(dist_m))
             else:
-                f_time_at_dist = lambda x: 0
+                f_time_at_dist = lambda x: 0.0
 
-            tgt_path_x = tgt_data['x'] * scale_geo - cx
-            tgt_path_y = tgt_data['y'] * scale_geo - cy
-            tgt_u = tgt_data['dist'] / tgt_data['dist'].max()
-            tgt_smooth = len(tgt_path_x) * 10
-            try:
-                tgt_tck, _ = splprep([tgt_path_x, tgt_path_y], u=tgt_u, k=3,
-                                     s=tgt_smooth, per=1 if is_closed else 0)
-            except Exception:
-                tgt_tck, _ = splprep([tgt_path_x, tgt_path_y], s=len(tgt_path_x), per=0)
-            drv_x_pts, drv_y_pts = splev(u_new, tgt_tck)
+        # ── SPATIAL PATH: driver's own GPS spline ───────────────────────────
+        drv_data = ref_data if d == ref_driver else tgt_data
+        drv_x = drv_data['x'] * scale_geo - cx   # centered on reference driver
+        drv_y = drv_data['y'] * scale_geo - cy
+        drv_u = drv_data['dist'] / drv_data['dist'].max()
+        drv_closed = np.linalg.norm([drv_x[0] - drv_x[-1], drv_y[0] - drv_y[-1]]) < 50
+        try:
+            drv_tck, _ = splprep([drv_x, drv_y], u=drv_u, k=3, s=len(drv_x) * 10,
+                                  per=1 if drv_closed else 0)
+        except Exception:
+            drv_tck, _ = splprep([drv_x, drv_y], s=len(drv_x) * 0.1, per=0)
 
-            drv_pts = np.column_stack((drv_x_pts, drv_y_pts, np.zeros_like(drv_x_pts)))
-            drv_segs = np.sqrt(np.sum(np.diff(drv_pts, axis=0)**2, axis=1))
-            drv_dist_step = np.sum(drv_segs) / (num_points - 1)
+        # Resample at SAME u_new as reference → same num_points, same index alignment
+        drv_xpts, drv_ypts = splev(u_new, drv_tck)
 
-        results_map[d] = metrics_display
+        # Straight correction (disabled — functions kept for later use)
+        # drv_speed_at_pts = np.interp(
+        #     u_new * drv_data['dist'].max(),
+        #     drv_data['dist'],
+        #     drv_data['speed']
+        # )
+        # segments = _segment_track(drv_speed_at_pts, u_new * drv_data['dist'].max())
+        # _correct_straights(drv_xpts, drv_ypts, segments, blend_points=12)
+
+        # ── COMBINE: driver XY + reference timing ────────────────────────────
         driver_points = []
-
         for i in range(num_points):
-            pos_x, pos_y = float(drv_x_pts[i]), float(drv_y_pts[i])
+            # position: this driver's corrected GPS spline
+            drv_pos_x = drv_xpts[i]
+            drv_pos_y = drv_ypts[i]
 
-            original_dist_ref = u_new[i] * ref_data['dist'].max()
-            original_dist_next = u_new[min(i+1, len(u_new)-1)] * ref_data['dist'].max()
-
-            t_curr = float(f_time_at_dist(original_dist_ref))
-            t_next = float(f_time_at_dist(original_dist_next))
-
+            dist_curr = u_new[i] * ref_data['dist'].max()
+            dist_next = u_new[min(i + 1, num_points - 1)] * ref_data['dist'].max()
+            t_curr = float(f_time_at_dist(dist_curr))
+            t_next = float(f_time_at_dist(dist_next))
             dt = t_next - t_curr
             if dt <= 0: dt = 0.001
-            req_speed = drv_dist_step / dt
+            req_speed = rail_dist_step / dt
 
             driver_points.append({
-                "x": round(pos_x, 3), "y": round(pos_y, 3), "z": 0.0,
+                "x": round(float(drv_pos_x), 3),
+                "y": round(float(drv_pos_y), 3),
+                "z": 0.0,
                 "speed": round(req_speed, 2)
             })
 
@@ -704,7 +849,7 @@ def generate_multirail_data(year, gp, session_type, drivers, settings):
 
     # CALL MINIMAP GENERATOR (if enabled)
     if settings.get('render_minimap', True):
-        generate_minimap_frames(session, drivers, exports_dir, ref_driver, year, gp)
+        generate_minimap_frames(session, drivers, exports_dir, ref_driver, year, gp, session_type)
     else:
         print("[F1 Baker] Minimap rendering skipped (disabled in settings)")
 

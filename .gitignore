@@ -4,3 +4,12 @@ F1_Pipeline_Assets/exports/minimap_frames/
 # Windows-download duplicates of the addon — edit files in the original folder instead
 launch_control_auto_car_rig (1)/
 launch_control_auto_car_rig (1).zip
+
+# Python bytecode cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Blender autosave/backup files
+*.blend1
+*.blend2

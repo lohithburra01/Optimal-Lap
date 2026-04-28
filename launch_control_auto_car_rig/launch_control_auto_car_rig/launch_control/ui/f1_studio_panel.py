@@ -16,6 +16,9 @@ from ..operators.f1_pipeline import (
     OBJECT_OT_f1_flatten_z,
     OBJECT_OT_f1_snap_z_to_track,
     OBJECT_OT_f1_render_minimap,
+    OBJECT_OT_f1_apex_correct,
+    OBJECT_OT_f1_centerline_correct,
+    OBJECT_OT_ExportDriverStyle,
 )
 from ..operators.heli_cam import (
     F1_OT_create_heli_cam,
@@ -135,6 +138,12 @@ class PANEL_PT_F1_Studio(bpy.types.Panel):
         row.operator(OBJECT_OT_f1_generate_scene.bl_idname,
                      icon='RENDER_ANIMATION', text="GENERATE SCENE")
 
+        layout.separator()
+        row = layout.row()
+        row.scale_y = 1.3
+        row.operator(OBJECT_OT_ExportDriverStyle.bl_idname,
+                     icon='EXPORT', text="Export Driver Style (JSON)")
+
         row = layout.row()
         row.scale_y = 1.3
         row.operator(OBJECT_OT_f1_render_minimap.bl_idname,
@@ -183,7 +192,13 @@ class PANEL_PT_F1_Studio(bpy.types.Panel):
         row.operator(F1_OT_bake_trails.bl_idname,
                      icon='REC', text="Bake Trails")
 
-        # XY correction
+        # XY correction — Centerline Correct is the primary method
+        row = box.row()
+        row.scale_y = 1.5
+        row.operator(OBJECT_OT_f1_centerline_correct.bl_idname,
+                     icon='SNAP_MIDPOINT', text="Build Racing Line")
+        box.separator()
+
         row = box.row(align=True)
         row.scale_y = 1.3
         row.operator(OBJECT_OT_f1_diagnose_path.bl_idname,
@@ -195,6 +210,15 @@ class PANEL_PT_F1_Studio(bpy.types.Panel):
         row.scale_y = 1.5
         row.operator(OBJECT_OT_f1_auto_correct_path.bl_idname,
                      icon='FILE_REFRESH', text="Auto-Correct (until on-track)")
+                     
+        row = box.row()
+        row.scale_y = 1.5
+        row.operator("f1.apex_tighten", text="Tighten Apexes", icon='MOD_CURVE')
+
+        row = box.row()
+        row.scale_y = 1.5
+        row.operator(OBJECT_OT_f1_apex_correct.bl_idname,
+                     icon='CON_TRACKTO', text="Apex Correction")
 
         col = box.column(align=True)
         col.prop(props, "correction_falloff")

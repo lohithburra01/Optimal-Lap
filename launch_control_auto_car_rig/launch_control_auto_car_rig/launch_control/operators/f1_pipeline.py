@@ -2,6 +2,7 @@ import bpy
 import os
 import json
 import math
+import numpy as np
 import requests
 from mathutils import Vector
 from bpy.types import Operator, PropertyGroup
@@ -295,12 +296,42 @@ def _generate_single_car(item):
     print(f"[F1 Studio] ═══ {item['driver']} COMPLETE ═══\n")
 
 
+def _apply_saved_alignment_to_scene(scene, track_id):
+    """Write tracks.json alignment to the UI sliders. The slider update
+    callback (_on_alignment_changed) transforms every loaded car's path
+    uniformly — so this MUST run after all cars are loaded, otherwise
+    timer-deferred cars 2+ keep identity transform and end up rotated
+    differently from car 1."""
+    db = F1_Database_Manager()
+    tracks_json = os.path.join(db.root, "database", "tracks.json")
+    if not os.path.isfile(tracks_json):
+        return
+    try:
+        with open(tracks_json, 'r', encoding='utf-8') as f:
+            tracks_data = json.load(f)
+    except Exception:
+        return
+    alignment = tracks_data.get(track_id, {}).get("alignment")
+    if not alignment:
+        return
+    props = scene.f1_pipeline_props
+    props.align_offset_x = alignment.get("offset_x", 0.0)
+    props.align_offset_y = alignment.get("offset_y", 0.0)
+    props.align_rotation = alignment.get("rotation", 0.0)
+    props.align_scale    = alignment.get("scale", 1.0)
+    print(f"[F1 Studio] Loaded saved alignment for '{track_id}'")
+
+
 def _pipeline_finish():
     """Final housekeeping after all cars are processed."""
     global _pipeline_original_edit_all, _pipeline_first_event
 
     scene = bpy.context.scene
     scene.settings.edit_all_mode = _pipeline_original_edit_all
+
+    if _pipeline_first_event:
+        track_id = _pipeline_first_event.lower().replace(" ", "_")
+        _apply_saved_alignment_to_scene(scene, track_id)
 
     # Link track meshes into each car's GroundDetection
     # (track is already in scene — just need to reference it)
@@ -433,38 +464,9 @@ class OBJECT_OT_f1_generate_scene(Operator):
         else:
             _pipeline_finish()
 
-        # Apply saved alignment
-        track_id = _pipeline_first_event.lower().replace(" ", "_")
-        self._apply_saved_alignment(context, track_id)
-
         self.report({'INFO'}, "Scene generation started" if len(_pipeline_queue) > 1
                      else "Scene Generated Successfully")
         return {'FINISHED'}
-
-    def _apply_saved_alignment(self, context, track_id):
-        """Load saved alignment from tracks.json and apply to UI sliders."""
-        db = F1_Database_Manager()
-        tracks_json = os.path.join(db.root, "database", "tracks.json")
-        if not os.path.isfile(tracks_json):
-            return
-
-        try:
-            with open(tracks_json, 'r', encoding='utf-8') as f:
-                tracks_data = json.load(f)
-        except Exception:
-            return
-
-        track_entry = tracks_data.get(track_id, {})
-        alignment = track_entry.get("alignment", None)
-        if not alignment:
-            return
-
-        props = context.scene.f1_pipeline_props
-        props.align_offset_x = alignment.get("offset_x", 0.0)
-        props.align_offset_y = alignment.get("offset_y", 0.0)
-        props.align_rotation = alignment.get("rotation", 0.0)
-        props.align_scale    = alignment.get("scale", 1.0)
-        print(f"[F1 Studio] Loaded saved alignment for '{track_id}'")
 
     def load_track(self, filepath):
         """Append the entire track .blend file (all collections & loose objects).
@@ -926,6 +928,784 @@ def _correct_single_pass(path_obj, track_obj, falloff, strength, inset=0.0):
     return off_count
 
 
+# ==============================================================================
+# APEX CORRECTION
+# ==============================================================================
+
+def _detect_corners(path_obj, curvature_threshold=0.005):
+    """Detect corner and straight segments of a path using curvature.
+
+    Returns list of {'type': 'CORNER'|'STRAIGHT', 'start': int, 'end': int,
+                      'direction': 'LEFT'|'RIGHT'|None}.
+    """
+    import numpy as np
+    from scipy.ndimage import binary_dilation, binary_erosion
+
+    points, ptype = _get_path_points(path_obj)
+    n = len(points)
+    if n < 3:
+        return [{'type': 'STRAIGHT', 'start': 0, 'end': n - 1, 'direction': None}]
+
+    mw = path_obj.matrix_world
+    coords = [mw @ _get_point_co(pt, ptype) for pt in points]
+
+    # Tangent via central difference
+    tangents = []
+    for i in range(n):
+        prev_co = coords[(i - 1) % n]
+        next_co = coords[(i + 1) % n]
+        t = (next_co - prev_co)
+        if t.length > 1e-6:
+            t.normalize()
+        tangents.append(t)
+
+    # Curvature = angle between consecutive tangents
+    curvature = []
+    for i in range(n):
+        t0 = tangents[i]
+        t1 = tangents[(i + 1) % n]
+        dot = max(-1.0, min(1.0, t0.dot(t1)))
+        curvature.append(math.acos(dot))
+
+    # Gaussian smooth curvature (sigma=5)
+    curv_arr = np.array(curvature)
+    sigma = 5.0
+    kernel_r = 15
+    kernel = np.array([math.exp(-j**2 / (2 * sigma**2)) for j in range(-kernel_r, kernel_r + 1)])
+    kernel /= kernel.sum()
+    curv_padded = np.pad(curv_arr, kernel_r, mode='wrap')
+    curv_smooth = np.convolve(curv_padded, kernel, mode='valid')
+
+    is_corner = curv_smooth > curvature_threshold
+
+    # Morphological close: fill small gaps
+    is_corner = binary_dilation(is_corner, iterations=10)
+    is_corner = binary_erosion(is_corner, iterations=10)
+
+    # Build contiguous runs
+    MIN_CORNER   = 20
+    MIN_STRAIGHT = 10
+    raw_segs = []
+    cur_type  = 'CORNER' if is_corner[0] else 'STRAIGHT'
+    seg_start = 0
+    for i in range(1, n):
+        t = 'CORNER' if is_corner[i] else 'STRAIGHT'
+        if t != cur_type:
+            raw_segs.append({'type': cur_type, 'start': seg_start, 'end': i - 1, 'direction': None})
+            cur_type  = t
+            seg_start = i
+    raw_segs.append({'type': cur_type, 'start': seg_start, 'end': n - 1, 'direction': None})
+
+    # Merge short segments
+    changed = True
+    while changed:
+        changed = False
+        merged = []
+        i = 0
+        while i < len(raw_segs):
+            seg    = raw_segs[i]
+            length = seg['end'] - seg['start'] + 1
+            too_short = ((seg['type'] == 'CORNER'   and length < MIN_CORNER) or
+                         (seg['type'] == 'STRAIGHT' and length < MIN_STRAIGHT))
+            if too_short:
+                changed = True
+                if merged:
+                    merged[-1]['end'] = seg['end']
+                elif i + 1 < len(raw_segs):
+                    raw_segs[i + 1]['start'] = seg['start']
+                    i += 1
+                    continue
+                else:
+                    merged.append(seg)
+            else:
+                merged.append(seg)
+            i += 1
+        raw_segs = merged
+
+    # Determine turn direction for each CORNER segment
+    for seg in raw_segs:
+        if seg['type'] != 'CORNER':
+            continue
+        cross_sum = 0.0
+        for i in range(seg['start'], seg['end']):
+            t0 = tangents[i]
+            t1 = tangents[(i + 1) % n]
+            cross_sum += t0.x * t1.y - t0.y * t1.x  # Z component of cross product
+        seg['direction'] = 'LEFT' if cross_sum > 0 else 'RIGHT'
+
+    return raw_segs
+
+
+def _find_inside_edge_distance(point_co, inside_direction, track_obj, max_search=5.0, step=0.1):
+    """Step along inside_direction until we fall off the track edge.
+
+    Returns (edge_distance, edge_point) or (max_search, None) if not found.
+    """
+    last_hit_pos = None
+    last_hit_dist = 0.0
+
+    dist = 0.0
+    while dist <= max_search:
+        probe = Vector((point_co.x + inside_direction.x * dist,
+                        point_co.y + inside_direction.y * dist,
+                        point_co.z))
+        on_track, world_pt = _ray_test_on_track(probe, track_obj)
+        if on_track:
+            last_hit_pos  = world_pt
+            last_hit_dist = dist
+            dist += step
+        else:
+            # First miss — the previous hit was the edge
+            if last_hit_pos is None:
+                # Already off track at step 0
+                return (0.0, point_co.copy())
+            return (last_hit_dist, last_hit_pos)
+
+    return (max_search, None)
+
+
+def _apply_apex_correction(path_obj, track_obj, corners, strength=0.7, inset=0.15, falloff=15):
+    """Push corner path points toward the track apex.
+
+    For each CORNER segment: finds the inside edge, computes a raised-cosine
+    weighted correction vector toward a target `inset` distance from the edge,
+    gaussian-smooths the full correction array, then applies it in-place.
+    """
+    points, ptype = _get_path_points(path_obj)
+    n = len(points)
+    if n < 3:
+        return
+
+    mw     = path_obj.matrix_world
+    inv_mw = mw.inverted()
+    closed = path_obj.data.splines[0].use_cyclic_u
+
+    # World-space coords and tangents
+    coords = [mw @ _get_point_co(pt, ptype) for pt in points]
+    tangents = []
+    for i in range(n):
+        prev_co = coords[(i - 1) % n]
+        next_co = coords[(i + 1) % n]
+        t = (next_co - prev_co)
+        if t.length > 1e-6:
+            t.normalize()
+        tangents.append(t)
+
+    # Per-point curvature (for apex detection)
+    curvature = []
+    for i in range(n):
+        t0 = tangents[i]
+        t1 = tangents[(i + 1) % n]
+        dot = max(-1.0, min(1.0, t0.dot(t1)))
+        curvature.append(math.acos(dot))
+
+    raw_corrections = [Vector((0.0, 0.0, 0.0))] * n
+
+    for seg in corners:
+        if seg['type'] != 'CORNER':
+            continue
+
+        s   = seg['start']
+        e   = seg['end']
+        direction = seg.get('direction', 'LEFT')
+
+        # Apex = index of maximum curvature in this segment
+        apex_idx = s + max(range(e - s + 1), key=lambda k: curvature[s + k])
+        half_len  = max((e - s) / 2.0, 1.0)
+
+        for i in range(s, e + 1):
+            co      = coords[i]
+            tangent = tangents[i]
+
+            # Inside = left-perpendicular for LEFT turns, right for RIGHT turns
+            if direction == 'LEFT':
+                inside_dir = Vector((-tangent.y,  tangent.x, 0.0))
+            else:
+                inside_dir = Vector(( tangent.y, -tangent.x, 0.0))
+
+            if inside_dir.length > 1e-6:
+                inside_dir.normalize()
+
+            # Find inside track edge
+            edge_dist, edge_pt = _find_inside_edge_distance(
+                co, inside_dir, track_obj, max_search=5.0, step=0.1)
+
+            if edge_pt is None:
+                # Could not find edge within max_search — skip
+                continue
+
+            # Target = inset distance back from the edge toward track center
+            apex_target = edge_pt + (-inside_dir * inset)
+
+            # Raised-cosine weight: 1.0 at apex, 0.0 at segment entry/exit
+            dist_from_apex = abs(i - apex_idx)
+            if dist_from_apex < half_len:
+                weight = 0.5 * (1.0 + math.cos(math.pi * dist_from_apex / half_len))
+            else:
+                weight = 0.0
+
+            corr_vec = (apex_target - co) * (weight * strength)
+            corr_vec.z = 0.0
+            raw_corrections[i] = corr_vec
+
+    # Gaussian smooth to prevent discontinuities at segment boundaries
+    smoothed = _gaussian_smooth_vectors(raw_corrections, falloff, closed=closed)
+
+    # Apply corrections
+    inv_rot = mw.inverted().to_3x3()
+    for i, pt in enumerate(points):
+        if smoothed[i].length < 1e-6:
+            continue
+        local_corr = inv_rot @ smoothed[i]
+        co = _get_point_co(pt, ptype)
+        _set_point_co(pt, ptype, co + local_corr)
+
+    path_obj.data.update_tag()
+
+
+def _apex_correct_all_paths(scene, strength, inset, falloff):
+    """Run apex correction on every registered driving path in the scene.
+
+    Returns the number of paths corrected.
+    """
+    props = scene.f1_pipeline_props
+    track_obj = props.track_surface_obj
+    if track_obj is None:
+        return 0
+
+    corrected = 0
+    for car in scene.lc.cars:
+        path_obj = car.driving_path
+        if path_obj is None:
+            continue
+        corners = _detect_corners(path_obj)
+        corner_segments = [s for s in corners if s['type'] == 'CORNER']
+        if corner_segments:
+            _apply_apex_correction(path_obj, track_obj, corner_segments,
+                                   strength=strength, inset=inset, falloff=falloff)
+            corrected += 1
+
+    sync_all_trails_from_paths(scene)
+    return corrected
+
+
+class OBJECT_OT_f1_apex_correct(Operator):
+    bl_idname  = "f1.apex_correct"
+    bl_label   = "Apex Correction"
+    bl_description = "Push corner paths toward track apexes using curvature detection and inside-edge raycasting"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        scene = context.scene
+        props = scene.f1_pipeline_props
+        if props.track_surface_obj is None:
+            self.report({'ERROR'}, "Set Track Surface object first")
+            return {'CANCELLED'}
+
+        count = _apex_correct_all_paths(
+            scene,
+            strength=props.correction_strength,
+            inset=props.correction_inset,
+            falloff=props.correction_falloff,
+        )
+        self.report({'INFO'}, f"Apex correction applied to {count} path(s)")
+        return {'FINISHED'}
+
+
+
+# ==============================================================================
+# CENTERLINE CORRECTION
+# ==============================================================================
+
+def _find_edge_distance(point_xy, direction, track_obj, max_search=15.0, step=0.1):
+    """
+    Step along `direction` from `point_xy`, raycasting down at each step.
+    Returns (edge_distance, edge_xy) — distance to last hit, and its XY position.
+    If never misses within max_search, returns (max_search, last_test_xy).
+    If first step misses, returns (0.0, point_xy).
+    """
+    inv = track_obj.matrix_world.inverted()
+    ray_dir_local = (inv.to_3x3() @ Vector((0, 0, -1))).normalized()
+
+    last_hit_dist = 0.0
+    last_hit_xy = Vector((point_xy.x, point_xy.y))
+
+    d = step
+    while d <= max_search:
+        test_xy = point_xy + direction * d
+        origin_world = Vector((test_xy.x, test_xy.y, 10000.0))
+        origin_local = inv @ origin_world
+        hit, loc, _, _ = track_obj.ray_cast(origin_local, ray_dir_local)
+        if not hit:
+            return last_hit_dist, last_hit_xy
+        last_hit_dist = d
+        last_hit_xy = Vector((test_xy.x, test_xy.y))
+        d += step
+
+    return max_search, last_hit_xy
+
+
+def _extract_path_geometry(path_obj):
+    """
+    Extract world-space positions and tangents from a driving path.
+    Returns: coords (n,2 numpy array), tangents (n,2 numpy array), closed (bool)
+    """
+    points, ptype = _get_path_points(path_obj)
+    n = len(points)
+    closed = path_obj.data.splines[0].use_cyclic_u
+    
+    coords = np.zeros((n, 2))
+    for i, pt in enumerate(points):
+        co_local = _get_point_co(pt, ptype)
+        co_world = path_obj.matrix_world @ co_local
+        coords[i] = (co_world.x, co_world.y)
+    
+    # Tangents via central difference
+    tangents = np.zeros((n, 2))
+    for i in range(n):
+        if closed:
+            prev_i = (i - 1) % n
+            next_i = (i + 1) % n
+        else:
+            prev_i = max(0, i - 1)
+            next_i = min(n - 1, i + 1)
+        diff = coords[next_i] - coords[prev_i]
+        norm = np.linalg.norm(diff)
+        tangents[i] = diff / norm if norm > 1e-8 else np.array([1.0, 0.0])
+    
+    return coords, tangents, closed
+
+
+def _compute_curvature(coords, tangents, closed, smooth_sigma=10):
+    """
+    Compute signed curvature at each point. Positive = turning left, negative = turning right.
+    Returns: curvature (numpy array, length n), smoothed
+    """
+    from scipy.ndimage import gaussian_filter1d
+    n = len(coords)
+    curvature = np.zeros(n)
+    
+    for i in range(n):
+        next_i = (i + 1) % n if closed else min(i + 1, n - 1)
+        # Cross product of tangent[i] x tangent[next_i] gives signed angle
+        cross = tangents[i][0] * tangents[next_i][1] - tangents[i][1] * tangents[next_i][0]
+        dot = np.clip(np.dot(tangents[i], tangents[next_i]), -1.0, 1.0)
+        angle = np.arccos(dot)
+        curvature[i] = angle * np.sign(cross)
+    
+    # Smooth curvature
+    if closed:
+        padded = np.concatenate([curvature, curvature, curvature])
+        smoothed = gaussian_filter1d(padded, sigma=smooth_sigma)
+        return smoothed[n:2*n]
+    else:
+        return gaussian_filter1d(curvature, sigma=smooth_sigma)
+
+
+def _detect_track_boundaries(coords, tangents, track_obj, max_half_width=4.0, step=0.1):
+    """
+    For each point, find distance to track edge on both sides.
+    Capped at max_half_width to ignore pit lane mergers and access roads.
+    
+    Returns: dist_left (n,), dist_right (n,) — numpy arrays of edge distances
+    """
+    n = len(coords)
+    dist_left = np.full(n, max_half_width)
+    dist_right = np.full(n, max_half_width)
+    
+    for i in range(n):
+        pt_xy = Vector((float(coords[i][0]), float(coords[i][1])))
+        left_dir = Vector((-tangents[i][1], tangents[i][0]))   # perpendicular left
+        right_dir = Vector((tangents[i][1], -tangents[i][0]))   # perpendicular right
+        
+        dl, _ = _find_edge_distance(pt_xy, left_dir, track_obj, 
+                                     max_search=max_half_width, step=step)
+        dr, _ = _find_edge_distance(pt_xy, right_dir, track_obj, 
+                                     max_search=max_half_width, step=step)
+        dist_left[i] = dl
+        dist_right[i] = dr
+    
+    return dist_left, dist_right
+
+
+def _segment_corners(curvature, min_corner_length=20, min_straight_length=10, 
+                      curvature_threshold=0.003):
+    """
+    Returns list of segments: [{'type': 'CORNER'|'STRAIGHT', 'start': int, 'end': int, 
+                                 'direction': 'LEFT'|'RIGHT'|None, 'apex_idx': int|None}]
+    """
+    from scipy.ndimage import binary_dilation, binary_erosion
+    
+    n = len(curvature)
+    abs_curv = np.abs(curvature)
+    is_corner = abs_curv > curvature_threshold
+    
+    # Morphological close to fill small gaps
+    struct = np.ones(5)
+    is_corner = binary_dilation(is_corner, structure=struct, iterations=4)
+    is_corner = binary_erosion(is_corner, structure=struct, iterations=4)
+    
+    # Build contiguous segments
+    segments = []
+    in_corner = False
+    start = 0
+    for i in range(n):
+        if is_corner[i] and not in_corner:
+            # End previous straight if exists
+            if i > 0 and (not segments or segments[-1]['end'] < i - 1):
+                segments.append({'type': 'STRAIGHT', 'start': start, 'end': i - 1,
+                                  'direction': None, 'apex_idx': None})
+            start = i
+            in_corner = True
+        elif not is_corner[i] and in_corner:
+            segments.append({'type': 'CORNER', 'start': start, 'end': i - 1,
+                              'direction': None, 'apex_idx': None})
+            start = i
+            in_corner = False
+    # Handle final segment
+    if in_corner:
+        segments.append({'type': 'CORNER', 'start': start, 'end': n - 1,
+                          'direction': None, 'apex_idx': None})
+    elif start < n - 1:
+        segments.append({'type': 'STRAIGHT', 'start': start, 'end': n - 1,
+                          'direction': None, 'apex_idx': None})
+    
+    # Merge short segments
+    merged = []
+    for seg in segments:
+        length = seg['end'] - seg['start'] + 1
+        if seg['type'] == 'CORNER' and length < min_corner_length and merged:
+            merged[-1]['end'] = seg['end']  # absorb into previous
+        elif seg['type'] == 'STRAIGHT' and length < min_straight_length and merged:
+            merged[-1]['end'] = seg['end']  # absorb into previous
+        else:
+            merged.append(seg)
+    
+    # Compute direction and apex for each CORNER
+    for seg in merged:
+        if seg['type'] == 'CORNER':
+            s, e = seg['start'], seg['end']
+            avg_curv = np.mean(curvature[s:e+1])
+            seg['direction'] = 'LEFT' if avg_curv > 0 else 'RIGHT'
+            # Apex = point of maximum absolute curvature within segment
+            seg['apex_idx'] = s + int(np.argmax(abs_curv[s:e+1]))
+    
+    return merged
+
+
+def _generate_ideal_line(coords, tangents, curvature, segments, dist_left, dist_right,
+                          closed, apex_inset_frac=0.15, entry_width_frac=0.7):
+    """
+    Generate ideal racing line as TARGET lateral fractions of track width.
+    
+    For each point, computes where the car SHOULD be as a fraction of track width:
+      0.0 = inside edge (for corners, relative to turn direction)
+      0.5 = center
+      1.0 = outside edge
+    
+    On straights: target = 0.5 (center)
+    At corner apex: target = apex_inset_frac (close to inside, e.g. 0.15 = 15% from inside)
+    At corner entry/exit: target = entry_width_frac (wide, e.g. 0.7 = 70% from inside = outside)
+    
+    Returns: target_fractions (numpy array, length n) — where each point should be
+             in terms of left-right fraction: 0=full left edge, 1=full right edge
+    """
+    n = len(coords)
+    
+    # First compute where each point currently IS as a left-right fraction
+    # fraction = dist_left / (dist_left + dist_right)
+    # 0 = at left edge, 0.5 = center, 1 = at right edge
+    total_width = dist_left + dist_right
+    total_width = np.clip(total_width, 0.1, None)  # avoid division by zero
+    current_frac = dist_left / total_width  # 0=left edge, 1=right edge
+    
+    # Start with current fractions (no change)
+    target_frac = current_frac.copy()
+    
+    for seg in segments:
+        if seg['type'] == 'STRAIGHT':
+            # On straights: target center
+            for i in range(seg['start'], seg['end'] + 1):
+                target_frac[i] = 0.5
+            continue
+        
+        # CORNER segment
+        s, e = seg['start'], seg['end']
+        apex = seg['apex_idx']
+        direction = seg['direction']
+        
+        for i in range(s, e + 1):
+            # Phase through the corner: 0 at entry/exit, 1 at apex
+            if i <= apex:
+                dist_to_apex = apex - i
+                half_len = max(apex - s, 1)
+                phase = 1.0 - (dist_to_apex / half_len)
+            else:
+                dist_from_apex = i - apex
+                half_len = max(e - apex, 1)
+                phase = 1.0 - (dist_from_apex / half_len)
+            
+            # Cosine smoothing
+            weight = 0.5 * (1.0 - math.cos(math.pi * phase))
+            
+            # Inside and outside target fractions depend on turn direction
+            if direction == 'LEFT':
+                # Left turn: inside = left edge (fraction 0), outside = right edge (fraction 1)
+                inside_target = apex_inset_frac           # close to left edge
+                outside_target = entry_width_frac         # toward right edge
+            else:
+                # Right turn: inside = right edge (fraction 1), outside = left edge (fraction 0)
+                inside_target = 1.0 - apex_inset_frac     # close to right edge
+                outside_target = 1.0 - entry_width_frac   # toward left edge
+            
+            # Blend between outside (entry/exit) and inside (apex)
+            target_frac[i] = outside_target + (inside_target - outside_target) * weight
+    
+    # Smooth target fractions for continuity at segment boundaries
+    from scipy.ndimage import gaussian_filter1d
+    if closed:
+        padded = np.concatenate([target_frac, target_frac, target_frac])
+        smoothed = gaussian_filter1d(padded, sigma=12)
+        target_frac = smoothed[n:2*n]
+    else:
+        target_frac = gaussian_filter1d(target_frac, sigma=12)
+    
+    # Clamp to valid range
+    target_frac = np.clip(target_frac, 0.05, 0.95)
+    
+    return target_frac, current_frac
+
+
+def _extract_driver_style(coords, tangents, segments, dist_left, dist_right):
+    """
+    For each corner segment, extract broad driver style from GPS positions:
+    - apex_shift: how many points early(negative) or late(positive) the driver's 
+      closest-to-inside point is vs the geometric apex
+    - apex_depth: fraction of available inside room the driver actually uses (0-1)
+    - entry_exit_ratio: >1 means wider entry than exit, <1 means wider exit than entry
+    
+    Returns: list of dicts, one per corner segment in order
+    """
+    styles = []
+    
+    for seg in segments:
+        if seg['type'] != 'CORNER':
+            continue
+        
+        s, e = seg['start'], seg['end']
+        geo_apex = seg['apex_idx']
+        direction = seg['direction']
+        
+        # For each point in corner, compute distance to inside edge
+        inside_distances = []
+        for i in range(s, e + 1):
+            if direction == 'LEFT':
+                inside_distances.append(dist_left[i])
+            else:
+                inside_distances.append(dist_right[i])
+        
+        inside_distances = np.array(inside_distances)
+        
+        if len(inside_distances) == 0:
+            styles.append({'apex_shift': 0, 'apex_depth': 0.5, 'entry_exit_ratio': 1.0})
+            continue
+        
+        # Driver's apex = point closest to inside edge (minimum inside_distance)
+        driver_apex_local = int(np.argmin(inside_distances))
+        driver_apex_global = s + driver_apex_local
+        
+        # Apex shift: positive = late apex, negative = early apex
+        apex_shift = driver_apex_global - geo_apex
+        
+        # Apex depth: how much of the available room does the driver use?
+        # If inside_distance at driver apex is small → driver goes deep (close to edge)
+        geo_apex_inside_dist = inside_distances[geo_apex - s] if (geo_apex - s) < len(inside_distances) else inside_distances[0]
+        driver_min_inside_dist = inside_distances[driver_apex_local]
+        if geo_apex_inside_dist > 0.01:
+            apex_depth = 1.0 - (driver_min_inside_dist / geo_apex_inside_dist)
+        else:
+            apex_depth = 0.5
+        apex_depth = np.clip(apex_depth, 0.0, 1.0)
+        
+        # Entry/exit asymmetry
+        mid_local = len(inside_distances) // 2
+        if mid_local > 0 and mid_local < len(inside_distances):
+            entry_avg = np.mean(inside_distances[:mid_local])
+            exit_avg = np.mean(inside_distances[mid_local:])
+            if exit_avg > 0.01:
+                entry_exit_ratio = entry_avg / exit_avg
+            else:
+                entry_exit_ratio = 1.0
+        else:
+            entry_exit_ratio = 1.0
+        
+        entry_exit_ratio = np.clip(entry_exit_ratio, 0.3, 3.0)
+        
+        styles.append({
+            'apex_shift': int(apex_shift),
+            'apex_depth': float(apex_depth),
+            'entry_exit_ratio': float(entry_exit_ratio)
+        })
+    
+    return styles
+
+
+def _apply_style_to_ideal(target_frac, segments, styles, style_blend=0.5):
+    """
+    Blend driver style into the ideal racing line.
+    style_blend: 0 = pure ideal line, 1 = fully styled. Default 0.5 = half and half.
+    
+    Modifies target_frac in-place.
+    """
+    corner_idx = 0
+    for seg in segments:
+        if seg['type'] != 'CORNER':
+            continue
+        if corner_idx >= len(styles):
+            break
+        
+        style = styles[corner_idx]
+        s, e = seg['start'], seg['end']
+        apex = seg['apex_idx']
+        seg_len = e - s + 1
+        
+        # Apply apex shift: shift the peak of the offset curve
+        shift = int(round(style['apex_shift'] * style_blend))
+        if shift != 0 and seg_len > abs(shift) * 2:
+            section = target_frac[s:e+1].copy()
+            shifted = np.zeros_like(section)
+            for i in range(len(section)):
+                src = i - shift
+                if 0 <= src < len(section):
+                    shifted[i] = section[src]
+                else:
+                    shifted[i] = section[max(0, min(len(section)-1, src))]
+            target_frac[s:e+1] = section * (1 - style_blend) + shifted * style_blend
+        
+        # Apply apex depth: scale how far from center the target goes
+        # depth > 0.5 means driver goes deeper, < 0.5 means stays wider
+        depth_scale = 1.0 + (style['apex_depth'] - 0.5) * style_blend * 0.5
+        mid_frac = 0.5  # center
+        for i in range(s, e + 1):
+            # Scale the deviation from center
+            target_frac[i] = mid_frac + (target_frac[i] - mid_frac) * depth_scale
+        
+        corner_idx += 1
+
+
+def _build_racing_line(path_obj, track_obj, strength=0.8, max_half_width=4.0,
+                        style_blend=0.5):
+    """
+    Build an ideal racing line for a single path.
+    
+    strength: how much to move toward ideal position (0=keep GPS, 1=full ideal)
+    max_half_width: cap for edge detection (ignores pit mergers beyond this)
+    style_blend: how much driver style to apply (0=pure geometric ideal, 1=full GPS style)
+    
+    Returns: number of corners processed
+    """
+    coords, tangents, closed = _extract_path_geometry(path_obj)
+    n = len(coords)
+    
+    curvature = _compute_curvature(coords, tangents, closed, smooth_sigma=10)
+    
+    dist_left, dist_right = _detect_track_boundaries(
+        coords, tangents, track_obj, max_half_width=max_half_width, step=0.1
+    )
+    
+    segments = _segment_corners(curvature)
+    
+    # Generate ideal target fractions and get current fractions
+    target_frac, current_frac = _generate_ideal_line(
+        coords, tangents, curvature, segments, dist_left, dist_right, closed
+    )
+    
+    # Extract driver style and apply it
+    styles = _extract_driver_style(coords, tangents, segments, dist_left, dist_right)
+    _apply_style_to_ideal(target_frac, segments, styles, style_blend=style_blend)
+    
+    # Clamp again after style application
+    target_frac = np.clip(target_frac, 0.05, 0.95)
+    
+    # Blend between current position and target position
+    blended_frac = current_frac * (1.0 - strength) + target_frac * strength
+    
+    # Convert fractions back to world positions
+    points, ptype = _get_path_points(path_obj)
+    inv_mat = path_obj.matrix_world.inverted()
+    
+    total_width = dist_left + dist_right
+    total_width = np.clip(total_width, 0.1, None)
+    
+    for i in range(n):
+        # Current position is at current_frac[i] of the width
+        # Target position is at blended_frac[i] of the width
+        # Shift needed (in left-right fraction)
+        frac_shift = blended_frac[i] - current_frac[i]
+        
+        # Convert fraction shift to world-space displacement
+        # Positive frac_shift = move toward right edge (positive right direction)
+        # The total width at this point determines the scale
+        displacement_bu = frac_shift * total_width[i]
+        
+        # Right direction vector
+        right_dir = np.array([tangents[i][1], -tangents[i][0]])
+        
+        new_x = coords[i][0] + right_dir[0] * displacement_bu
+        new_y = coords[i][1] + right_dir[1] * displacement_bu
+        
+        # Preserve Z
+        co_local = _get_point_co(points[i], ptype)
+        co_world = path_obj.matrix_world @ co_local
+        
+        new_world = Vector((new_x, new_y, co_world.z))
+        new_local = inv_mat @ new_world
+        _set_point_co(points[i], ptype, new_local)
+    
+    path_obj.data.update_tag()
+    
+    corner_count = sum(1 for seg in segments if seg['type'] == 'CORNER')
+    return corner_count
+
+
+class OBJECT_OT_f1_centerline_correct(bpy.types.Operator):
+    bl_idname = "f1.centerline_correct"
+    bl_label = "Build Racing Line"
+    bl_description = "Generate ideal racing line from track geometry with driver style from GPS"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    def execute(self, context):
+        scene = context.scene
+        props = scene.f1_pipeline_props
+        track_obj = props.track_surface_obj
+        
+        if track_obj is None:
+            self.report({'ERROR'}, "Set Track Surface object first")
+            return {'CANCELLED'}
+        
+        total_corners = 0
+        path_count = 0
+        for car in scene.lc.cars:
+            path_obj = car.driving_path
+            if path_obj is None:
+                continue
+            
+            corners = _build_racing_line(
+                path_obj, track_obj,
+                strength=props.correction_strength,
+                max_half_width=4.0,
+                style_blend=props.correction_inset  # repurpose inset slider as style_blend
+            )
+            total_corners += corners
+            path_count += 1
+        
+        from .f1_trail import sync_all_trails_from_paths
+        sync_all_trails_from_paths(scene)
+        
+        self.report({'INFO'}, f"Racing line built for {path_count} paths ({total_corners} corners)")
+        return {'FINISHED'}
+
+
 class OBJECT_OT_f1_correct_path(Operator):
     bl_idname = "f1.correct_path"
     bl_label = "Correct Path to Track"
@@ -1015,6 +1795,191 @@ class OBJECT_OT_f1_auto_correct_path(Operator):
             self.report({'WARNING'},
                         f"Stopped after {MAX_AUTO_ITERATIONS} iterations — "
                         f"{still_off} vertices still off-track")
+        return {'FINISHED'}
+
+
+def _apex_tighten_pass(path_obj, track_obj, push_strength=0.3, falloff=15):
+    """
+    Push corner points toward inside of turns. Uses speed stored in rig keyframes
+    to detect corners, and path curvature to determine inside direction.
+    
+    Only affects points where the car is going slow (corners).
+    Leaves straights untouched.
+    
+    push_strength: how far toward inside to push (fraction of current distance to inside edge)
+    falloff: gaussian smooth radius for the push vectors
+    
+    Returns: number of points pushed
+    """
+    points, ptype = _get_path_points(path_obj)
+    n = len(points)
+    closed = path_obj.data.splines[0].use_cyclic_u
+    
+    # Get world coords
+    world_coords = []
+    for pt in points:
+        co = path_obj.matrix_world @ _get_point_co(pt, ptype)
+        world_coords.append(co)
+    
+    # Compute tangents and curvature sign from path geometry
+    # Curvature sign tells us turn direction: positive = left, negative = right
+    curvature_sign = []
+    for i in range(n):
+        prev_i = (i - 1) % n if closed else max(0, i - 1)
+        next_i = (i + 1) % n if closed else min(n - 1, i + 1)
+        
+        v1 = world_coords[i] - world_coords[prev_i]
+        v2 = world_coords[next_i] - world_coords[i]
+        
+        # Cross product Z component = turn direction
+        cross_z = v1.x * v2.y - v1.y * v2.x
+        curvature_sign.append(cross_z)
+    
+    # Compute approximate speed at each point from spacing
+    # Points closer together = car going slower (since timing is baked at constant frame rate)
+    # Actually simpler: use the distance between adjacent points as a speed proxy
+    # Large spacing = fast, small spacing = slow
+    spacing = []
+    for i in range(n):
+        next_i = (i + 1) % n if closed else min(n - 1, i + 1)
+        d = (world_coords[next_i] - world_coords[i]).length
+        spacing.append(d)
+    spacing = np.array(spacing)
+    
+    # Smooth spacing to get clean speed proxy
+    from scipy.ndimage import gaussian_filter1d
+    if closed:
+        padded = np.concatenate([spacing, spacing, spacing])
+        spacing_smooth = gaussian_filter1d(padded, sigma=5)[n:2*n]
+    else:
+        spacing_smooth = gaussian_filter1d(spacing, sigma=5)
+    
+    # Normalize: 0 = slowest point (tightest corner), 1 = fastest (straight)
+    sp_min = np.min(spacing_smooth)
+    sp_max = np.max(spacing_smooth)
+    if sp_max - sp_min > 1e-8:
+        speed_norm = (spacing_smooth - sp_min) / (sp_max - sp_min)
+    else:
+        speed_norm = np.ones(n)
+    
+    # Corner weight: 1 at slowest points, 0 at fastest
+    # Use a threshold: only affect points below 50th percentile speed
+    corner_weight = np.clip(1.0 - speed_norm * 2.0, 0.0, 1.0)
+    # Smooth the weight so transitions are gradual
+    if closed:
+        padded = np.concatenate([corner_weight, corner_weight, corner_weight])
+        corner_weight = gaussian_filter1d(padded, sigma=8)[n:2*n]
+    else:
+        corner_weight = gaussian_filter1d(corner_weight, sigma=8)
+    corner_weight = np.clip(corner_weight, 0.0, 1.0)
+    
+    # Build push vectors
+    raw_pushes = []
+    pushed_count = 0
+    
+    for i in range(n):
+        if corner_weight[i] < 0.01:
+            raw_pushes.append(Vector((0, 0, 0)))
+            continue
+        
+        # Inside direction: perpendicular to tangent, toward turn center
+        prev_i = (i - 1) % n if closed else max(0, i - 1)
+        next_i = (i + 1) % n if closed else min(n - 1, i + 1)
+        tangent = (world_coords[next_i] - world_coords[prev_i])
+        tangent.z = 0
+        if tangent.length > 1e-8:
+            tangent.normalize()
+        
+        # Perpendicular: left = (-ty, tx), right = (ty, -tx)
+        # If curvature_sign > 0 (turning left), inside = left
+        # If curvature_sign < 0 (turning right), inside = right
+        if curvature_sign[i] > 0:
+            inside_dir = Vector((-tangent.y, tangent.x, 0))
+        else:
+            inside_dir = Vector((tangent.y, -tangent.x, 0))
+        
+        # How far to push: use closest_point_on_mesh to find distance to nearest edge
+        # Then push a fraction of that distance toward inside
+        pt_xy = Vector((world_coords[i].x, world_coords[i].y))
+        
+        # Find inside edge by stepping along inside_dir
+        inv = track_obj.matrix_world.inverted()
+        ray_dir_local = (inv.to_3x3() @ Vector((0, 0, -1))).normalized()
+        
+        inside_edge_dist = 0.0
+        step = 0.1
+        max_search = 4.0
+        d = step
+        while d <= max_search:
+            test = pt_xy + Vector((inside_dir.x, inside_dir.y)) * d
+            origin = Vector((test.x, test.y, 10000.0))
+            local_o = inv @ origin
+            hit, _, _, _ = track_obj.ray_cast(local_o, ray_dir_local)
+            if not hit:
+                inside_edge_dist = d
+                break
+            d += step
+        
+        if inside_edge_dist < 0.01:
+            raw_pushes.append(Vector((0, 0, 0)))
+            continue
+        
+        # Push toward inside: strength * corner_weight * distance_to_edge
+        push_amount = push_strength * corner_weight[i] * inside_edge_dist
+        push_vec = inside_dir * push_amount
+        push_vec.z = 0
+        raw_pushes.append(push_vec)
+        pushed_count += 1
+    
+    # Gaussian smooth the push vectors
+    smoothed = _gaussian_smooth_vectors(raw_pushes, falloff, closed=closed)
+    
+    # Apply
+    inv_rot = path_obj.matrix_world.inverted().to_3x3()
+    for i in range(n):
+        if smoothed[i].length < 1e-6:
+            continue
+        local_push = inv_rot @ smoothed[i]
+        co = _get_point_co(points[i], ptype)
+        _set_point_co(points[i], ptype, co + local_push)
+    
+    path_obj.data.update_tag()
+    return pushed_count
+
+
+class OBJECT_OT_f1_apex_tighten(bpy.types.Operator):
+    bl_idname = "f1.apex_tighten"
+    bl_label = "Tighten Apexes"
+    bl_description = "Push corner points toward inside of turns for tighter apex lines"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    def execute(self, context):
+        scene = context.scene
+        props = scene.f1_pipeline_props
+        track_obj = props.track_surface_obj
+        
+        if track_obj is None:
+            self.report({'ERROR'}, "Set Track Surface object first")
+            return {'CANCELLED'}
+        
+        total_pushed = 0
+        path_count = 0
+        for car in scene.lc.cars:
+            path_obj = car.driving_path
+            if path_obj is None:
+                continue
+            pushed = _apex_tighten_pass(
+                path_obj, track_obj,
+                push_strength=props.correction_strength,
+                falloff=props.correction_falloff
+            )
+            total_pushed += pushed
+            path_count += 1
+        
+        from .f1_trail import sync_all_trails_from_paths
+        sync_all_trails_from_paths(scene)
+        
+        self.report({'INFO'}, f"Tightened {total_pushed} apex points across {path_count} paths")
         return {'FINISHED'}
 
 
@@ -1416,11 +2381,240 @@ class OBJECT_OT_f1_render_minimap(Operator):
         return {'FINISHED'}
 
 
+# ==============================================================================
+# DRIVER STYLE EXPORT (bridge to F1 Track Visualizer standalone addon)
+# Iterates the lap queue when one is present so multi-driver scenes get a
+# style JSON per driver. Falls back to the single dropdown selection when
+# the queue is empty.
+# ==============================================================================
+def _resolve_style_output_dir():
+    db = F1_Database_Manager()
+    candidate = os.path.join(db.root, "style_params")
+    try:
+        os.makedirs(candidate, exist_ok=True)
+        return candidate
+    except Exception:
+        import tempfile as _tf
+        fallback = os.path.join(_tf.gettempdir(), "f1_style_params")
+        os.makedirs(fallback, exist_ok=True)
+        return fallback
+
+
+def _extract_and_write_style_for_driver(year_str, race, session, driver, q_seg,
+                                        is_testing=False, test_number=0,
+                                        test_session_arg=0, base_dir=None):
+    """Run FastF1 → extract_style_params → write_style_json for one driver.
+
+    Returns (written_path, error_msg). On success error_msg is "". On failure
+    written_path is None. Caller must enable the FastF1 cache before calling
+    (fastf1.Cache.enable_cache) — done once per operator click, not per driver.
+    """
+    import fastf1
+    from . import f1_style_extract
+
+    try:
+        year_int = int(year_str)
+    except Exception as e:
+        return None, f"bad year '{year_str}': {e}"
+
+    try:
+        if is_testing:
+            if isinstance(test_session_arg, int):
+                day = test_session_arg if test_session_arg in (1, 2, 3) else 1
+            else:
+                day_map = {'Day 1': 1, 'Day 2': 2, 'Day 3': 3, 'Day Best': 1}
+                day = day_map.get(test_session_arg, 1)
+            fa_session = fastf1.get_testing_session(year_int, int(test_number), int(day))
+        else:
+            session_for_baker = _session_key_to_baker(session)
+            fa_session = fastf1.get_session(year_int, race, session_for_baker)
+        fa_session.load(telemetry=True, laps=True, weather=False, messages=False)
+    except Exception as e:
+        return None, f"FastF1 load: {e}"
+
+    try:
+        driver_laps = fa_session.laps.pick_drivers(driver)
+        if session == 'Q' and q_seg in ('Q1', 'Q2', 'Q3'):
+            seg_laps = driver_laps[driver_laps['Q'] == q_seg] if 'Q' in driver_laps.columns else driver_laps
+            if len(seg_laps) > 0:
+                driver_laps = seg_laps
+        lap = driver_laps.pick_fastest()
+        if lap is None or (hasattr(lap, 'empty') and lap.empty):
+            return None, f"no fastest lap for {driver}"
+        tel = lap.get_telemetry()
+    except Exception as e:
+        return None, f"telemetry fetch: {e}"
+
+    try:
+        tel = tel.dropna(subset=['X', 'Y'])
+        xs = np.asarray(tel['X'].values, dtype=float)
+        ys = np.asarray(tel['Y'].values, dtype=float)
+        speeds = None
+        if 'Speed' in tel.columns:
+            sp = tel['Speed'].values
+            if len(sp) == len(xs):
+                speeds = np.asarray(sp, dtype=float)
+    except Exception as e:
+        return None, f"telemetry columns missing: {e}"
+
+    try:
+        params, corners_out = f1_style_extract.extract_style_params(xs, ys, speeds)
+    except Exception as e:
+        return None, f"style extraction: {e}"
+
+    if base_dir is None:
+        base_dir = _resolve_style_output_dir()
+
+    try:
+        lap_num = int(lap['LapNumber'])
+    except Exception:
+        lap_num = None
+    lap_label = f"lap{lap_num}" if lap_num else "lapfastest"
+    gp_slug = race.lower().replace(" ", "_")
+    filename = f"{driver}_{gp_slug}_{year_str}_{lap_label}.json"
+    out_path = os.path.join(base_dir, filename)
+
+    try:
+        written_path = f1_style_extract.write_style_json(
+            params, out_path,
+            corners=corners_out,
+            meta={
+                "driver":     driver,
+                "season":     str(year_str),
+                "grand_prix": race,
+                "session":    session,
+                "lap":        lap_num if lap_num is not None else "fastest",
+            },
+        )
+    except Exception as e:
+        return None, f"write style JSON: {e}"
+
+    return written_path, ""
+
+
+class OBJECT_OT_ExportDriverStyle(Operator):
+    bl_idname = "object.export_driver_style"
+    bl_label = "Export Driver Style (JSON)"
+    bl_description = ("Extract racing-style JSON for the queued drivers (or "
+                      "the single dropdown selection if the queue is empty)")
+
+    def execute(self, context):
+        try:
+            from . import f1_style_extract  # noqa: F401
+        except ImportError as e:
+            self.report({'ERROR'},
+                        f"Style extractor unavailable (missing dependency: scipy?): {e}")
+            return {'CANCELLED'}
+
+        try:
+            from scipy.ndimage import gaussian_filter1d  # noqa: F401
+        except ImportError:
+            self.report({'ERROR'}, "scipy is required for style extraction")
+            return {'CANCELLED'}
+
+        scene = context.scene
+        props = getattr(scene, "f1_pipeline_props", None)
+        if props is None:
+            self.report({'ERROR'}, "F1 pipeline props not initialised")
+            return {'CANCELLED'}
+
+        try:
+            import tempfile
+            import fastf1
+            cache_dir = os.path.join(tempfile.gettempdir(), "fastf1_cache")
+            os.makedirs(cache_dir, exist_ok=True)
+            fastf1.Cache.enable_cache(cache_dir)
+        except ImportError:
+            self.report({'ERROR'}, "fastf1 is not installed")
+            return {'CANCELLED'}
+        except Exception as e:
+            self.report({'ERROR'}, f"FastF1 cache setup failed: {e}")
+            return {'CANCELLED'}
+
+        base_dir = _resolve_style_output_dir()
+        queue = scene.f1_lap_queue
+
+        if len(queue) > 0:
+            global_q_seg = getattr(props, "sel_q_segment", "Q_ALL")
+            written, failed = [], []
+            for item in queue:
+                q_seg = global_q_seg if item.session == 'Q' else ''
+                path, err = _extract_and_write_style_for_driver(
+                    str(item.year), item.event, item.session, item.driver, q_seg,
+                    is_testing=item.is_testing,
+                    test_number=item.test_number,
+                    test_session_arg=item.test_session,
+                    base_dir=base_dir,
+                )
+                if path:
+                    written.append(path)
+                    print(f"[F1 Studio] Style JSON: {path}")
+                else:
+                    failed.append(f"{item.driver}: {err}")
+                    print(f"[F1 Studio] ⚠️ {item.driver} style: {err}")
+
+            if written and not failed:
+                self.report({'INFO'}, f"Wrote {len(written)} style JSON(s)")
+                return {'FINISHED'}
+            if written and failed:
+                self.report({'WARNING'},
+                    f"Wrote {len(written)}, failed {len(failed)}: "
+                    f"{'; '.join(failed)[:160]}")
+                return {'FINISHED'}
+            self.report({'ERROR'}, f"All failed: {'; '.join(failed)[:200]}")
+            return {'CANCELLED'}
+
+        # Queue empty: fall back to dropdown selection.
+        try:
+            year_str = props.sel_year
+            race     = props.sel_race
+            session  = props.sel_session
+            driver   = props.sel_driver
+            q_seg    = getattr(props, "sel_q_segment", "Q_ALL") if session == 'Q' else ''
+        except Exception as e:
+            self.report({'ERROR'}, f"Could not read selection: {e}")
+            return {'CANCELLED'}
+        if not driver or driver == 'NONE':
+            self.report({'ERROR'}, "No driver selected")
+            return {'CANCELLED'}
+        if not race or race == 'NONE':
+            self.report({'ERROR'}, "No race selected")
+            return {'CANCELLED'}
+
+        try:
+            from ..data.f1_properties import _get_event
+            event_meta = _get_event(year_str, race)
+        except Exception:
+            event_meta = None
+        is_testing = bool(event_meta and event_meta.get('event_type') == 'testing')
+        test_number = int(event_meta.get('test_number', 1)) if (is_testing and event_meta) else 0
+        test_session_arg = session if is_testing else 0
+
+        path, err = _extract_and_write_style_for_driver(
+            year_str, race, session, driver, q_seg,
+            is_testing=is_testing,
+            test_number=test_number,
+            test_session_arg=test_session_arg,
+            base_dir=base_dir,
+        )
+        if path:
+            self.report({'INFO'}, f"Style JSON: {path}")
+            return {'FINISHED'}
+        self.report({'ERROR'}, err)
+        return {'CANCELLED'}
+
+
 def register():
+    bpy.utils.register_class(OBJECT_OT_f1_apex_correct)
+    bpy.utils.register_class(OBJECT_OT_f1_centerline_correct)
+    bpy.utils.register_class(OBJECT_OT_f1_apex_tighten)
     bpy.app.handlers.load_post.append(_f1_load_post_handler)
 
 
 def unregister():
+    bpy.utils.unregister_class(OBJECT_OT_f1_apex_correct)
+    bpy.utils.unregister_class(OBJECT_OT_f1_centerline_correct)
+    bpy.utils.unregister_class(OBJECT_OT_f1_apex_tighten)
     if _f1_load_post_handler in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(_f1_load_post_handler)
     from .f1_trail import unregister_trail_handler

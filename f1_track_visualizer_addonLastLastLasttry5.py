@@ -28,20 +28,33 @@ bl_info = {
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def get_modules_path():
-    return bpy.utils.user_resource("SCRIPTS", path="modules", create=True)
+    # Isolated dependencies dir for this addon. Living under modules/ but in
+    # our own subfolder lets us install/upgrade/clean without colliding with
+    # other addons' deps (or leftover stale wheels from earlier failed runs).
+    return bpy.utils.user_resource(
+        "SCRIPTS", path="modules/f1_track_visualizer_deps", create=True
+    )
 
 def append_modules_to_sys_path(modules_path):
-    if modules_path not in sys.path:
-        sys.path.append(modules_path)
-        site.addsitedir(modules_path)
+    # Insert at the FRONT so our isolated wheels shadow any stale copies
+    # that earlier install attempts left in <user>/modules/.
+    if modules_path in sys.path:
+        sys.path.remove(modules_path)
+    sys.path.insert(0, modules_path)
+    site.addsitedir(modules_path)
 
 def check_dependencies():
+    # quadprog before trajectory_planning_helpers, and pinned: tph pulls
+    # quadprog as a transitive dep, and unpinned latest has no cp311
+    # win_amd64 wheel — pip would fall back to a source build that fails
+    # against Blender's header-less Python. Pinning >=0.1.12 forces a
+    # version with a published wheel.
     required = {
         "fastf1": "fastf1",
         "pandas": "pandas",
-        "scipy": "scipy",
+        "scipy":  "scipy",
+        "quadprog": "quadprog>=0.1.12",
         "trajectory_planning_helpers": "trajectory-planning-helpers",
-        "quadprog": "quadprog",
     }
     missing = []
     for module_name, pip_name in required.items():
@@ -52,10 +65,17 @@ def check_dependencies():
     return missing
 
 def install_package_to_blender(package, modules_path):
+    # --only-binary + --prefer-binary so pip refuses source builds —
+    # Blender's bundled Python ships without development headers, so any
+    # C extension that has to compile from source will fail.
+    # --upgrade is still needed: without it pip skips existing package
+    # dirs and we end up with old code paired with new dist-info metadata.
     try:
         subprocess.check_call([
             sys.executable, "-m", "pip", "install",
-            "--upgrade", "--target", modules_path, package
+            "--upgrade", "--target", modules_path,
+            "--only-binary=:all:", "--prefer-binary",
+            package
         ])
         return True
     except subprocess.CalledProcessError as e:
@@ -284,7 +304,8 @@ def _detect_corners_on_centerline(coords, kappa_hi_frac=0.25, kappa_lo_frac=0.08
     return corners, corner_id, phase, sign_arr
 
 
-def _compute_alpha_style(corners, corner_id, phase, kappa_sign, wr_safe, wl_safe, params):
+def _compute_alpha_style(corners, corner_id, phase, kappa_sign, wr_safe, wl_safe, params,
+                         corner_overrides=None):
     """
     Build lateral-offset warp α_style(s) from style params.
 
@@ -297,6 +318,12 @@ def _compute_alpha_style(corners, corner_id, phase, kappa_sign, wr_safe, wl_safe
           overlap when anchors compress (e.g. late apex → exit anchor near apex).
       (C) Per-station |α_style| capped at 70% of available width before the
           hard clip, so stacked bumps cannot saturate the boundary clipper.
+
+    corner_overrides (optional): list of per-corner dicts in lap order, each
+        with apex_phase / apex_tightness / vu_shape. Used when its length
+        matches len(corners) — those three params are then per-corner instead
+        of lap-wide. Other params (widths, smoothness, lr_asymmetry, master)
+        remain global.
     """
     import numpy as np
     from scipy.ndimage import gaussian_filter1d
@@ -308,19 +335,52 @@ def _compute_alpha_style(corners, corner_id, phase, kappa_sign, wr_safe, wl_safe
     if master < 1e-6:
         return alpha
 
-    apex_target  = 0.5 + 0.35 * float(params['apex_phase'])          # [0.15, 0.85]
-    vu_bias      = (float(params['vu_shape']) + 1.0) * 0.5           # [0, 1]; 0=V, 1=U
-    apex_tight   = float(params['apex_tightness'])
-    entry_w      = float(params['entry_width'])
-    exit_w       = float(params['exit_width'])
-    lr_asym      = float(params['lr_asymmetry'])
+    entry_w = float(params['entry_width'])
+    exit_w  = float(params['exit_width'])
+    lr_asym = float(params['lr_asymmetry'])
 
-    # (A) Anchors follow the apex; clamped to corner interior.
-    entry_anchor = max(0.05, apex_target - 0.35)
-    exit_anchor  = min(0.95, apex_target + 0.35)
-    half_gap_e   = apex_target - entry_anchor
-    half_gap_x   = exit_anchor - apex_target
-    half_gap_min = max(1e-3, min(half_gap_e, half_gap_x))
+    # Build per-corner derivations. If corner_overrides is consumable, the
+    # driver's per-corner apex_phase/apex_tightness/vu_shape replace the
+    # global lap-wide values for that corner. Otherwise the globals are
+    # broadcast to every corner (legacy behaviour).
+    Nc = len(corners)
+    use_overrides = (
+        isinstance(corner_overrides, list)
+        and len(corner_overrides) == Nc
+        and Nc > 0
+    )
+
+    g_ap = float(params['apex_phase'])
+    g_at = float(params['apex_tightness'])
+    g_vu = float(params['vu_shape'])
+
+    apex_target_c  = np.zeros(Nc)
+    vu_bias_c      = np.zeros(Nc)
+    apex_tight_c   = np.zeros(Nc)
+    entry_anchor_c = np.zeros(Nc)
+    exit_anchor_c  = np.zeros(Nc)
+    half_gap_min_c = np.zeros(Nc)
+
+    for ci in range(Nc):
+        if use_overrides:
+            co = corner_overrides[ci] or {}
+            ap = float(co.get('apex_phase',     g_ap))
+            at = float(co.get('apex_tightness', g_at))
+            vu = float(co.get('vu_shape',       g_vu))
+        else:
+            ap, at, vu = g_ap, g_at, g_vu
+
+        ap_t = 0.5 + 0.35 * ap                                  # [0.15, 0.85]
+        ea   = max(0.05, ap_t - 0.35)                           # (A) anchors follow apex
+        xa   = min(0.95, ap_t + 0.35)
+        hg   = max(1e-3, min(ap_t - ea, xa - ap_t))
+
+        apex_target_c[ci]  = ap_t
+        vu_bias_c[ci]      = (vu + 1.0) * 0.5                   # 0=V, 1=U
+        apex_tight_c[ci]   = at
+        entry_anchor_c[ci] = ea
+        exit_anchor_c[ci]  = xa
+        half_gap_min_c[ci] = hg
 
     for i in range(n):
         cid = int(corner_id[i])
@@ -335,6 +395,13 @@ def _compute_alpha_style(corners, corner_id, phase, kappa_sign, wr_safe, wl_safe
         w_in  = wr_safe[i] if in_dir > 0 else wl_safe[i]
         w_out = wr_safe[i] if out_dir > 0 else wl_safe[i]
         w_sym = min(w_in, w_out)
+
+        apex_target  = float(apex_target_c[cid])
+        vu_bias      = float(vu_bias_c[cid])
+        apex_tight   = float(apex_tight_c[cid])
+        entry_anchor = float(entry_anchor_c[cid])
+        exit_anchor  = float(exit_anchor_c[cid])
+        half_gap_min = float(half_gap_min_c[cid])
 
         # (B) Per-corner σ: length-adaptive base, clamped so bumps don't overlap.
         L = int(corners[cid]['L'])
@@ -510,13 +577,11 @@ class F1TrackProperties(PropertyGroup):
     )
 
     # --- Alignment ---
-    alignment_target: EnumProperty(
+    alignment_target_curve: PointerProperty(
         name="Target Line",
-        items=[
-            ('RACING_LINE',         "Q_RACING_LINE",          "Align to the pure min-curvature racing line"),
-            ('RACING_LINE_STYLED',  "Q_RACING_LINE_STYLED",   "Align to the styled racing line"),
-        ],
-        default='RACING_LINE'
+        description="Pick any Q_RACING_LINE* curve in the scene (eyedropper). Used by the single-path Align/Reshape button.",
+        type=bpy.types.Object,
+        poll=lambda self, obj: obj.type == 'CURVE' and obj.name.startswith("Q_RACING_LINE")
     )
     overwrite_source_path: BoolProperty(
         name="Overwrite Source Curve",
@@ -565,7 +630,10 @@ class OBJECT_OT_InstallF1Dependencies(Operator):
                 ok += 1
                 self.report({'INFO'}, f"Installed {pkg}")
             else:
-                self.report({'ERROR'}, f"Failed: {pkg}")
+                self.report({'ERROR'},
+                    f"Failed: {pkg}. If error mentions 'Access is denied' on "
+                    f"a .pyd file, close Blender and re-run install from a "
+                    f"fresh session before importing the addon's panel.")
 
         if ok == len(missing):
             self.report({'INFO'}, "All installed! Restart Blender if needed.")
@@ -1542,12 +1610,748 @@ class OBJECT_OT_GenerateRacingLine(Operator):
         return {'FINISHED'}
 
 
-class OBJECT_OT_GenerateStyledRacingLine(Operator):
-    bl_idname = "object.generate_styled_racing_line"
-    bl_label = "Generate Styled Racing Line"
+# ─── STYLED LINE V2 ─────────────────────────────────────────────────────────
+# Detects corners directly on Q_RACING_LINE (not centerline), parameterizes
+# phase along arc length, warps and clips in a single basis (raceline normals),
+# uses smoothed normals to kill tangent-noise zigzag at corners. Centerline
+# is used ONLY as a width lookup table.
+
+def _v2_detect_corners_arclen(coords, kappa_hi_frac=0.25, kappa_lo_frac=0.08, min_len=6):
+    """Hysteresis κ-corner detection on a closed 2D curve, with phase
+    parameterized by ARC LENGTH within each corner (not station count)."""
+    import numpy as np
+    from scipy.ndimage import gaussian_filter1d
+
+    n = len(coords)
+
+    tang = np.zeros((n, 2))
+    for i in range(n):
+        d = coords[(i + 3) % n] - coords[(i - 3) % n]
+        nm = np.linalg.norm(d)
+        tang[i] = d / nm if nm > 1e-8 else np.array([1.0, 0.0])
+
+    kappa = np.zeros(n)
+    for i in range(n):
+        t1, t2 = tang[i], tang[(i + 1) % n]
+        cross = t1[0] * t2[1] - t1[1] * t2[0]
+        dot = float(np.clip(np.dot(t1, t2), -1.0, 1.0))
+        kappa[i] = math.copysign(math.acos(dot), cross)
+
+    kappa_s = gaussian_filter1d(np.tile(kappa, 3), sigma=5.0)[n:2 * n]
+    kappa_abs = np.abs(kappa_s)
+    kmax = float(kappa_abs.max())
+    if kmax < 1e-6:
+        return [], np.full(n, -1, dtype=int), np.zeros(n), np.zeros(n)
+
+    above_hi = kappa_abs > kappa_hi_frac * kmax
+    above_lo = kappa_abs > kappa_lo_frac * kmax
+
+    straights = np.where(~above_lo)[0]
+    if len(straights) == 0:
+        apex = int(np.argmax(kappa_abs))
+        ks = int(math.copysign(1, kappa_s[apex]))
+        return ([{'entry': 0, 'apex': apex, 'exit': n - 1, 'L': n,
+                  'kappa_sign': ks}],
+                np.zeros(n, dtype=int),
+                np.linspace(0.0, 1.0, n),
+                np.full(n, ks, dtype=float))
+
+    roll = int(straights[0])
+    above_hi_r = np.roll(above_hi, -roll)
+    above_lo_r = np.roll(above_lo, -roll)
+    kappa_abs_r = np.roll(kappa_abs, -roll)
+    kappa_s_r = np.roll(kappa_s, -roll)
+    coords_r = np.roll(coords, -roll, axis=0)
+
+    seg = np.linalg.norm(np.diff(np.vstack([coords_r, coords_r[0]]), axis=0), axis=1)
+    arc_r = np.concatenate([[0.0], np.cumsum(seg)])
+
+    corners = []
+    i = 0
+    while i < n:
+        if above_hi_r[i]:
+            core_start = i
+            while i < n and above_hi_r[i]:
+                i += 1
+            core_end = i - 1
+            entry = core_start
+            while entry > 0 and above_lo_r[entry - 1]:
+                entry -= 1
+            exit_ = core_end
+            while exit_ < n - 1 and above_lo_r[exit_ + 1]:
+                exit_ += 1
+            L = exit_ - entry + 1
+            if L >= min_len:
+                apex_local = core_start + int(np.argmax(kappa_abs_r[core_start:core_end + 1]))
+                corners.append({
+                    '_entry_r': entry,
+                    '_apex_r': apex_local,
+                    '_exit_r': exit_,
+                    'L': L,
+                    'kappa_sign': int(math.copysign(1, kappa_s_r[apex_local])),
+                })
+        else:
+            i += 1
+
+    corner_id_r = np.full(n, -1, dtype=int)
+    phase_r = np.zeros(n)
+    sign_arr_r = np.zeros(n)
+    for ci, c in enumerate(corners):
+        entry, exit_ = c['_entry_r'], c['_exit_r']
+        arc0 = arc_r[entry]
+        arc1 = arc_r[exit_ + 1]
+        denom = max(arc1 - arc0, 1e-6)
+        for s in range(entry, exit_ + 1):
+            corner_id_r[s] = ci
+            phase_r[s] = (arc_r[s] - arc0) / denom
+            sign_arr_r[s] = c['kappa_sign']
+
+    corner_id = np.roll(corner_id_r, roll)
+    phase = np.roll(phase_r, roll)
+    kappa_sign = np.roll(sign_arr_r, roll)
+    for c in corners:
+        c['entry'] = (c.pop('_entry_r') + roll) % n
+        c['apex']  = (c.pop('_apex_r')  + roll) % n
+        c['exit']  = (c.pop('_exit_r')  + roll) % n
+
+    return corners, corner_id, phase, kappa_sign
+
+
+def _v2_periodic_smooth_xy(coords, sigma=1.5):
+    """Light periodic gaussian on a closed XY curve. Sigma kept small so
+    real corner geometry isn't flattened."""
+    import numpy as np
+    from scipy.ndimage import gaussian_filter1d
+    n = len(coords)
+    sx = gaussian_filter1d(np.tile(coords[:, 0], 3), sigma=sigma)[n:2 * n]
+    sy = gaussian_filter1d(np.tile(coords[:, 1], 3), sigma=sigma)[n:2 * n]
+    return np.column_stack([sx, sy])
+
+
+def _v3_find_hifi_path(driver_tag, props):
+    """Locate the per-driver baked telemetry path JSON. Tries in order:
+       1. <style_json_path>/../../temp_data/{driver}_{N}_hifi_path.json
+       2. <blend_dir>/F1_Pipeline_Assets/temp_data/...
+       3. <blend_dir>/temp_data/...
+    Returns the absolute path string, or None if nothing found."""
+    import os, glob
+    cands = []
+    style_json = str(getattr(props, 'style_json_path', '') or '').strip()
+    if style_json:
+        style_dir = os.path.dirname(os.path.abspath(style_json))
+        cands.append(os.path.join(os.path.dirname(style_dir), 'temp_data'))
+    try:
+        blend_dir = bpy.path.abspath('//')
+    except Exception:
+        blend_dir = ''
+    if blend_dir:
+        cands.append(os.path.join(blend_dir, 'F1_Pipeline_Assets', 'temp_data'))
+        cands.append(os.path.join(blend_dir, 'temp_data'))
+
+    for d in cands:
+        if not d or not os.path.isdir(d):
+            continue
+        c0 = os.path.join(d, f"{driver_tag}_0_hifi_path.json")
+        if os.path.isfile(c0):
+            return c0
+        c1 = os.path.join(d, f"{driver_tag}_hifi_path.json")
+        if os.path.isfile(c1):
+            return c1
+        matches = glob.glob(os.path.join(d, f"{driver_tag}_*_hifi_path.json"))
+        if matches:
+            return sorted(matches)[0]
+    return None
+
+
+def _v3_load_hifi_xy(path):
+    """Read hifi_path JSON → (N, 2) XY numpy array. Returns None on parse error."""
+    import json
+    import numpy as np
+    try:
+        with open(path, 'r', encoding='utf-8') as fp:
+            data = json.load(fp)
+        pts = data.get('points') or []
+        if len(pts) < 50:
+            return None
+        xs = np.array([float(p.get('x', 0.0)) for p in pts], dtype=float)
+        ys = np.array([float(p.get('y', 0.0)) for p in pts], dtype=float)
+        return np.column_stack([xs, ys])
+    except Exception:
+        return None
+
+
+def _v3_lap_fractions(corners, coords):
+    """For each corner, return apex's lap fraction (arc-length to apex / total lap
+    arc-length, in [0, 1)). Coord-frame independent."""
+    import numpy as np
+    n = len(coords)
+    d = np.diff(np.vstack([coords, coords[0:1]]), axis=0)
+    seg = np.linalg.norm(d, axis=1)
+    total = float(seg.sum())
+    if total < 1e-6:
+        return np.zeros(len(corners))
+    cumarc = np.concatenate([[0.0], np.cumsum(seg)])
+    return np.array([cumarc[int(c['apex'])] / total for c in corners])
+
+
+def _v3_match_corners_lap_fraction(q_corners, q_coords, sai_corners, sai_coords,
+                                   max_diff=0.06):
+    """Greedy one-to-one match by lap-fraction position of each apex. Q's coord
+    frame and SAI's coord frame can differ — only relative arc-length within each
+    path matters. Picks a global rotation offset that maximises matched pairs,
+    then assigns greedily. Returns list of length len(q_corners) with matched SAI
+    index or None for unmatched."""
+    import numpy as np
+    Nq = len(q_corners)
+    Ns = len(sai_corners) if sai_corners else 0
+    if Nq == 0 or Ns == 0:
+        return [None] * Nq
+
+    qf = _v3_lap_fractions(q_corners, q_coords)
+    sf = _v3_lap_fractions(sai_corners, sai_coords)
+
+    def _circ(a, b):
+        d = abs(float(a) - float(b))
+        return min(d, 1.0 - d)
+
+    # Search a small set of global offsets (Q lap-fraction may start at a
+    # different physical track position than SAI lap-fraction). Pick the offset
+    # that maximises matched pairs under max_diff, ties broken by total error.
+    best = None
+    for off in np.linspace(0.0, 1.0, 41, endpoint=False):
+        sf_shift = (sf + off) % 1.0
+        used_s = set()
+        n_match = 0
+        total_err = 0.0
+        for qi in range(Nq):
+            best_sj = None
+            best_d = max_diff + 1.0
+            for sj in range(Ns):
+                if sj in used_s:
+                    continue
+                d = _circ(qf[qi], sf_shift[sj])
+                if d < best_d:
+                    best_d = d
+                    best_sj = sj
+            if best_sj is not None and best_d <= max_diff:
+                used_s.add(best_sj)
+                n_match += 1
+                total_err += best_d
+        if best is None or n_match > best[0] or (n_match == best[0] and total_err < best[1]):
+            best = (n_match, total_err, off)
+
+    off = best[2] if best is not None else 0.0
+    sf_shift = (sf + off) % 1.0
+
+    pairs = []
+    for qi in range(Nq):
+        for sj in range(Ns):
+            pairs.append((_circ(qf[qi], sf_shift[sj]), qi, sj))
+    pairs.sort(key=lambda t: t[0])
+    matched = [None] * Nq
+    q_taken = set()
+    s_taken = set()
+    for d, qi, sj in pairs:
+        if d > max_diff:
+            break
+        if qi in q_taken or sj in s_taken:
+            continue
+        matched[qi] = sj
+        q_taken.add(qi)
+        s_taken.add(sj)
+    return matched
+
+
+def _find_style_params_dir(props):
+    """Locate the project's style_params/ directory. Tries:
+       1. Sibling of props.style_json_path (most reliable when user has loaded one)
+       2. <blend_dir>/F1_Pipeline_Assets/style_params/
+       3. <blend_dir>/style_params/
+    Returns absolute path, or None."""
+    import os
+    cands = []
+    style_json = str(getattr(props, 'style_json_path', '') or '').strip()
+    if style_json:
+        cands.append(os.path.dirname(bpy.path.abspath(style_json)))
+    try:
+        blend_dir = bpy.path.abspath('//')
+    except Exception:
+        blend_dir = ''
+    if blend_dir:
+        cands.append(os.path.join(blend_dir, 'F1_Pipeline_Assets', 'style_params'))
+        cands.append(os.path.join(blend_dir, 'style_params'))
+    for c in cands:
+        if c and os.path.isdir(c):
+            return c
+    return None
+
+
+def _q_right_normals(raceline):
+    """Per-station right-normals for Q (chord-based), used for projecting the
+    driver's lateral offset and for re-applying it as displacement."""
+    import numpy as np
+    n_r = len(raceline)
+    rn = np.zeros((n_r, 2))
+    for i in range(n_r):
+        d = raceline[(i + 3) % n_r] - raceline[(i - 3) % n_r]
+        nm = np.linalg.norm(d)
+        if nm < 1e-8:
+            rn[i] = np.array([0.0, -1.0])
+        else:
+            t = d / nm
+            rn[i] = np.array([t[1], -t[0]])
+    return rn
+
+
+def _extract_offset_profile(raceline, q_corners, right_normals, driver_path_xy,
+                            smooth_sigma=3.0, taper_frac=0.15, max_clip=5.0):
+    """Returns a per-station signed lateral offset profile (n_r,) extracted from
+    the driver's path: closest-point projection onto Q's right-normals, masked
+    to corner stations only, cosine-tapered at corner boundaries, lightly
+    smoothed, and hard-clipped to ±max_clip metres. NOT scaled by master and
+    NOT applied to coords yet — pure signal extraction."""
+    import numpy as np
+    from scipy.spatial import cKDTree
+    from scipy.ndimage import gaussian_filter1d
+
+    n_r = len(raceline)
+    if driver_path_xy is None or len(driver_path_xy) < 50:
+        return np.zeros(n_r)
+
+    tree = cKDTree(driver_path_xy)
+    _, nn = tree.query(raceline)
+    raw = np.einsum('ij,ij->i', driver_path_xy[nn] - raceline, right_normals)
+    raw = np.clip(raw, -max_clip, max_clip)
+
+    out = np.zeros(n_r)
+    for c in q_corners:
+        idx = _v3_corner_indices(c, n_r)
+        L = len(idx)
+        if L < 4:
+            continue
+        taper_len = max(2, int(L * taper_frac))
+        taper = np.ones(L)
+        for k in range(taper_len):
+            phase = k / max(taper_len - 1, 1)
+            w = 0.5 * (1.0 - np.cos(np.pi * phase))
+            taper[k] = w
+            taper[L - 1 - k] = w
+        out[idx] = raw[idx] * taper
+
+    if smooth_sigma > 0.0:
+        out = gaussian_filter1d(np.tile(out, 3), sigma=smooth_sigma)[n_r:2 * n_r]
+
+    in_corner = np.zeros(n_r, dtype=bool)
+    for c in q_corners:
+        idx = _v3_corner_indices(c, n_r)
+        in_corner[idx] = True
+    out[~in_corner] = 0.0
+    return out
+
+
+def _styled_line_from_driver_path(raceline, q_corners, driver_path_xy, master,
+                                   smooth_sigma=3.0, taper_frac=0.15, max_offset_clip=5.0,
+                                   driver_tag=""):
+    """Build the styled racing line by extracting the driver's actual lateral
+    offset from Q (using their hifi-path / driving_path curve) and applying it
+    as a deformation to Q.
+
+    Process:
+      1. For each Q station, compute Q's right-normal from a 7-point chord.
+      2. cKDTree-find the closest point on the driver's path to each Q point.
+      3. Project the (driver_pt - Q_pt) vector onto Q's right-normal → signed
+         lateral offset per station, in metres.
+      4. Mask: stations not inside any detected corner → offset = 0 (straights
+         keep the line exactly on Q).
+      5. Cosine-taper the first/last `taper_frac` of each corner so offset goes
+         smoothly 0 → raw → 0 across the corner.
+      6. Light gaussian smooth (sigma ≈ 3 stations, periodic) to remove
+         telemetry sampling noise.
+      7. Re-mask after smoothing as a paranoia guard against small bleed.
+      8. Hard-clip per-station |offset| to max_offset_clip metres.
+      9. Output: styled = Q + (offset × master) × Q_right_normal.
+
+    Driver-style identity comes from the SHAPE of the offset profile within each
+    corner, which is unique to each driver's actual driving. Q's straights are
+    untouched. No JSON params — the data from FastF1 (the driving path itself)
+    IS the parameter."""
+    import numpy as np
+    from scipy.spatial import cKDTree
+    from scipy.ndimage import gaussian_filter1d
+
+    n_r = len(raceline)
+    if driver_path_xy is None or len(driver_path_xy) < 50:
+        return raceline.copy(), 0, len(q_corners)
+
+    right_normals = np.zeros((n_r, 2))
+    for i in range(n_r):
+        d = raceline[(i + 3) % n_r] - raceline[(i - 3) % n_r]
+        nm = np.linalg.norm(d)
+        if nm < 1e-8:
+            right_normals[i] = np.array([0.0, -1.0])
+        else:
+            t = d / nm
+            right_normals[i] = np.array([t[1], -t[0]])
+
+    tree = cKDTree(driver_path_xy)
+    _, nn = tree.query(raceline)
+    delta = driver_path_xy[nn] - raceline                     # (n, 2)
+    raw_offsets = np.einsum('ij,ij->i', delta, right_normals) # (n,)
+    raw_offsets = np.clip(raw_offsets, -max_offset_clip, max_offset_clip)
+
+    in_corner = np.zeros(n_r, dtype=bool)
+    for c in q_corners:
+        idx = _v3_corner_indices(c, n_r)
+        in_corner[idx] = True
+
+    final_offsets = np.zeros(n_r)
+    for c in q_corners:
+        idx = _v3_corner_indices(c, n_r)
+        L = len(idx)
+        if L < 4:
+            continue
+        taper_len = max(2, int(L * taper_frac))
+        taper = np.ones(L)
+        for k in range(taper_len):
+            phase = k / max(taper_len - 1, 1)
+            w = 0.5 * (1.0 - np.cos(np.pi * phase))
+            taper[k] = w
+            taper[L - 1 - k] = w
+        final_offsets[idx] = raw_offsets[idx] * taper
+
+    if smooth_sigma > 0.0:
+        final_offsets = gaussian_filter1d(
+            np.tile(final_offsets, 3), sigma=smooth_sigma,
+        )[n_r:2 * n_r]
+
+    # Re-mask hard zero outside corners (smoothing can bleed a few stations).
+    final_offsets[~in_corner] = 0.0
+
+    final_offsets *= float(master)
+
+    # Per-corner peak-magnitude debug.
+    if driver_tag:
+        print(f"[STYLE-OFFSET] {driver_tag}: per-corner peak |offset| (m):", flush=True)
+        for ci, c in enumerate(q_corners):
+            idx = _v3_corner_indices(c, n_r)
+            seg = final_offsets[idx]
+            if len(seg) > 0:
+                peak = float(np.abs(seg).max())
+                signed_at_apex = float(final_offsets[int(c['apex'])])
+                print(
+                    f"  c{ci:02d} L={c['L']:3d} ks={c['kappa_sign']:+d} "
+                    f"peak={peak:+.2f}m  apex_offset={signed_at_apex:+.2f}m",
+                    flush=True,
+                )
+        max_d = float(np.abs(final_offsets).max())
+        print(f"[STYLE-OFFSET] {driver_tag}: max |offset| over lap = {max_d:.2f} m", flush=True)
+
+    styled = raceline + final_offsets[:, None] * right_normals
+    return styled, n_r, len(q_corners)
+
+
+def _styled_line_for_driver_legacy(raceline, q_corners, outside_budget,
+                            json_corners, json_params, sai_xy, master,
+                            max_drift=2.0, max_loose=0.6):
+    """[Legacy — replaced by _styled_line_from_driver_path] Periodic cubic spline
+    through anchor points derived from the 8-param JSON. Kept here in case the
+    JSON-based fallback is needed."""
+    import numpy as np
+    from scipy.interpolate import CubicSpline
+    n_r = len(raceline)
+
+    # 1. Match Q's corners to SAI's per-corner JSON entries via lap-fraction.
+    per_corner_data = [None] * len(q_corners)
+    if sai_xy is not None and json_corners:
+        sai_corners_det, _, _, _ = _v2_detect_corners_arclen(sai_xy)
+        if sai_corners_det:
+            matched = _v3_match_corners_lap_fraction(
+                q_corners, raceline, sai_corners_det, sai_xy, max_diff=0.06,
+            )
+            for qi, sj in enumerate(matched):
+                if sj is not None and 0 <= sj < len(json_corners):
+                    per_corner_data[qi] = json_corners[sj]
+
+    g_ap = float(json_params.get('apex_phase', 0.0))
+    g_at = float(json_params.get('apex_tightness', 0.5))
+
+    # 2. Per-station cumulative arc length and lap-fraction.
+    d = np.diff(np.vstack([raceline, raceline[0:1]]), axis=0)
+    seg_len = np.linalg.norm(d, axis=1)
+    total_arc = float(seg_len.sum())
+    if total_arc < 1e-6:
+        return raceline.copy(), 0, len(q_corners)
+    cum = np.concatenate([[0.0], np.cumsum(seg_len)])[:-1]      # (n_r,)
+    arc_frac = cum / total_arc                                    # in [0, 1)
+
+    # 3. Build anchor list (arc_frac, dev_x, dev_y).
+    arcs = []
+    dxs = []
+    dys = []
+
+    n_corners = len(q_corners)
+    for ci, c in enumerate(q_corners):
+        data = per_corner_data[ci]
+        if data is not None:
+            ap = float(data.get('apex_phase', g_ap))
+            at = float(data.get('apex_tightness', g_at))
+        else:
+            ap, at = g_ap, g_at
+
+        ap_eff = ap * master
+        at_eff = 0.5 + (at - 0.5) * master
+
+        drift_mag = abs(ap_eff) * float(max_drift)
+        drift_mag += max(0.0, 0.5 - at_eff) * float(max_loose)
+        budget = float(outside_budget.get(ci, 100.0))
+        drift_mag = min(drift_mag, budget)
+
+        apex_idx = int(c['apex'])
+        p_back = max(0, apex_idx - 3)
+        p_fwd = min(n_r - 1, apex_idx + 3)
+        chord = raceline[p_fwd] - raceline[p_back]
+        cn = float(np.linalg.norm(chord))
+        if cn < 1e-6:
+            continue
+        chord /= cn
+        right_normal = np.array([chord[1], -chord[0]])
+        outside_dir = +float(c['kappa_sign']) * right_normal
+
+        arcs.append(float(arc_frac[int(c['entry'])])); dxs.append(0.0); dys.append(0.0)
+        arcs.append(float(arc_frac[apex_idx]));        dxs.append(drift_mag * outside_dir[0]); dys.append(drift_mag * outside_dir[1])
+        arcs.append(float(arc_frac[int(c['exit'])]));  dxs.append(0.0); dys.append(0.0)
+
+    # 4. Mid-straight rest anchors (zero deviation).
+    for ci in range(n_corners):
+        c1 = q_corners[ci]
+        c2 = q_corners[(ci + 1) % n_corners]
+        a_exit = float(arc_frac[int(c1['exit'])])
+        a_entry = float(arc_frac[int(c2['entry'])])
+        if a_entry > a_exit:
+            mid = 0.5 * (a_exit + a_entry)
+        else:
+            mid = (0.5 * (a_exit + a_entry + 1.0)) % 1.0
+        arcs.append(mid); dxs.append(0.0); dys.append(0.0)
+
+    # 5. Sort, deduplicate, wrap for periodic.
+    arr = sorted(zip(arcs, dxs, dys), key=lambda t: t[0])
+    out_arcs, out_dxs, out_dys = [], [], []
+    for a, x, y in arr:
+        if out_arcs and abs(a - out_arcs[-1]) < 1e-6:
+            continue
+        out_arcs.append(a)
+        out_dxs.append(x)
+        out_dys.append(y)
+    out_arcs.append(out_arcs[0] + 1.0)
+    out_dxs.append(out_dxs[0])
+    out_dys.append(out_dys[0])
+
+    if len(out_arcs) < 4:
+        return raceline.copy(), sum(1 for d in per_corner_data if d is not None), n_corners
+
+    # 6. Periodic cubic splines for x and y deviation components.
+    spl_x = CubicSpline(out_arcs, out_dxs, bc_type='periodic')
+    spl_y = CubicSpline(out_arcs, out_dys, bc_type='periodic')
+
+    dev_x = spl_x(arc_frac)
+    dev_y = spl_y(arc_frac)
+
+    styled = raceline.copy()
+    styled[:, 0] += dev_x
+    styled[:, 1] += dev_y
+
+    # Debug — corner positions, anchor count, max deviation.
+    print("[STYLE-CUBIC] corners (entry/apex/exit station, apex lap-frac, kappa_sign):", flush=True)
+    for ci, c in enumerate(q_corners):
+        print(
+            f"  c{ci:02d}  entry={c['entry']:4d}  apex={c['apex']:4d}  exit={c['exit']:4d}  "
+            f"apex_frac={arc_frac[int(c['apex'])]*100:.1f}%  ks={c['kappa_sign']:+d}",
+            flush=True,
+        )
+    max_dev_total = float(np.linalg.norm(np.column_stack([dev_x, dev_y]), axis=1).max())
+    print(f"[STYLE-CUBIC] {len(out_arcs)-1} anchors used | max styled-vs-Q deviation = {max_dev_total:.2f} m", flush=True)
+
+    n_matched = sum(1 for d in per_corner_data if d is not None)
+    return styled, n_matched, n_corners
+
+
+def _curve_world_xy(obj):
+    """Read a curve object's spline points in world XY (handles BEZIER + POLY/NURBS)."""
+    import numpy as np
+    from mathutils import Vector
+    if obj is None or obj.type != 'CURVE' or not obj.data.splines:
+        return None
+    sp = obj.data.splines[0]
+    if sp.type == 'BEZIER':
+        pts = [obj.matrix_world @ bp.co for bp in sp.bezier_points]
+    else:
+        pts = [obj.matrix_world @ Vector(pt.co[:3]) for pt in sp.points]
+    if len(pts) < 4:
+        return None
+    return np.array([[float(p.x), float(p.y)] for p in pts], dtype=float)
+
+
+def _resolve_driving_path_obj(driver_code, scene):
+    """Find the driving_path_* curve in scene that corresponds to this driver code.
+    Two-step: direct name match, else trail-name back-lookup. Returns Object or None."""
+    du = driver_code.upper()
+    driving_paths = [
+        o for o in scene.objects
+        if o.type == 'CURVE' and o.name.startswith("driving_path_")
+    ]
+    for p in driving_paths:
+        if du in p.name.upper():
+            return p
+    trails = [
+        o for o in scene.objects
+        if o.type == 'CURVE' and o.name.startswith("LC_Trail_")
+    ]
+    for t in trails:
+        if du not in t.name.upper():
+            continue
+        suffix = t.name
+        for prefix in ("LC_Trail_car_rig_", "LC_Trail_"):
+            if suffix.startswith(prefix):
+                suffix = suffix[len(prefix):]
+                break
+        parts = suffix.split("_")
+        for i in range(len(parts), 0, -1):
+            cand_name = "driving_path_" + "_".join(parts[:i])
+            obj = scene.objects.get(cand_name)
+            if obj is not None and obj.type == 'CURVE':
+                return obj
+    return None
+
+
+def _v3_corner_indices(c, n):
+    """Inclusive index array entry..exit, wrap-aware."""
+    import numpy as np
+    entry, exit_ = c['entry'], c['exit']
+    if exit_ >= entry:
+        return np.arange(entry, exit_ + 1)
+    return np.concatenate([np.arange(entry, n), np.arange(0, exit_ + 1)])
+
+
+def _v3_apex_local_index(c, n, L):
+    """Where the κ-peak sits within the corner's local index range [0..L-1]."""
+    import numpy as np
+    entry, exit_ = int(c['entry']), int(c['exit'])
+    apex_abs = int(c['apex'])
+    if exit_ >= entry:
+        A = apex_abs - entry
+    else:
+        A = (apex_abs - entry) % n
+    return int(np.clip(A, 1, L - 2))
+
+
+def _v3_asymmetric_bell(L, peak_phase, sharpness=1.0):
+    """Smooth bump shape across L stations with peak at peak_phase ∈ (0, 1).
+    Value AND slope are exactly zero at both endpoints — this is critical for
+    a kink-free transition from the corner into the surrounding straight. The
+    peak is placed via a power warp on a cosine bell, which keeps the function
+    smooth everywhere (no piecewise discontinuity at the peak)."""
+    import numpy as np
+    if L < 4:
+        return np.zeros(L)
+    pp = float(np.clip(peak_phase, 0.05, 0.95))
+    if abs(math.log(pp)) < 1e-3:
+        power = 1.0
+    else:
+        power = math.log(0.5) / math.log(pp)
+    phase = np.arange(L, dtype=float) / float(L - 1)
+    warped = phase ** power
+    bell = 0.5 * (1.0 - np.cos(2.0 * np.pi * warped))
+    if sharpness != 1.0:
+        bell = bell ** float(sharpness)
+    return bell
+
+
+def _v3_reshape_corner(coords, c, ap_phase, tight, vu,
+                       outside_budget_at_apex=None,
+                       max_drift=3.5, max_loose=1.5,
+                       _dbg=False, _dbg_tag=""):
+    """Apply a smooth, bounded OUTSIDE drift to one corner. The bump shape is a
+    power-warped cosine bell — zero value AND zero slope at the corner's entry
+    and exit, peak slid to (0.5 − 0.4·apex_phase) of the corner. Result: smooth
+    tangent transition between corner and straight (no boundary kink), no
+    deviation propagating into the straights."""
+    import numpy as np
+
+    n = len(coords)
+    idx = _v3_corner_indices(c, n)
+    L = len(idx)
+    if L < 4:
+        return idx, coords[idx].copy()
+
+    seg = coords[idx].copy()
+    A_0 = _v3_apex_local_index(c, n, L)
+
+    # Outside direction = +kappa_sign × right_normal (away from apex inside).
+    iA = A_0
+    p_back = max(0, iA - 3)
+    p_fwd = min(L - 1, iA + 3)
+    chord = seg[p_fwd] - seg[p_back]
+    cn = float(np.linalg.norm(chord))
+    if cn < 1e-6:
+        return idx, seg
+    chord /= cn
+    right_normal = np.array([chord[1], -chord[0]])
+    outside_dir = +float(c['kappa_sign']) * right_normal
+
+    # Bump peak phase: late apex (ap>0) → entry side; early apex (ap<0) → exit side.
+    bump_phase = 0.5 - 0.4 * float(ap_phase)               # ap=+1 → 0.1, ap=-1 → 0.9
+    drift_mag = abs(float(ap_phase)) * float(max_drift)
+
+    # vu_shape: -1 → sharp (peakier), +1 → broad (rounder). Maps to bell exponent.
+    sharpness = float(np.clip(1.0 - 0.4 * float(vu), 0.5, 1.6))
+
+    w_drift = _v3_asymmetric_bell(L, bump_phase, sharpness=sharpness)
+
+    # Loose-driver kicker: a centered, symmetric bell at the natural apex.
+    loose_mag = max(0.0, 0.5 - float(tight)) * float(max_loose)
+    apex_phase_norm = float(A_0) / float(L - 1)
+    w_loose = _v3_asymmetric_bell(L, apex_phase_norm, sharpness=1.4)
+
+    outward = w_drift * drift_mag + w_loose * loose_mag    # (L,)
+
+    # Track-width clip against the outside budget at apex (the conservative point
+    # — outside budget is largest near apex on Q's IQP line, smallest near
+    # entry/exit; using apex value keeps the bump inside the kerb at its peak,
+    # and the gaussian decays toward entry/exit so we never push closer to the
+    # outside kerb than the apex value).
+    clipped = False
+    if outside_budget_at_apex is not None:
+        max_allowed = float(max(0.0, outside_budget_at_apex))
+        peak = float(outward.max())
+        if peak > max_allowed and peak > 1e-6:
+            outward *= max_allowed / peak
+            clipped = True
+
+    new_seg = seg + outward[:, None] * outside_dir[None, :]
+
+    if _dbg:
+        max_dev = float(np.linalg.norm(new_seg - seg, axis=1).max())
+        clip_tag = " *TRACK-CLIP*" if clipped else ""
+        print(
+            f"[V3-DBG]   {_dbg_tag} L={L} A_0={A_0} bump_idx={bump_center_idx:.1f} "
+            f"ap={ap_phase:+.3f} tight={tight:.3f} vu={vu:+.3f} "
+            f"drift_mag={drift_mag:.2f}m loose_mag={loose_mag:.2f}m{clip_tag} "
+            f"sigma_bump={sigma_bump:.1f} max_dev={max_dev:.3f}m",
+            flush=True,
+        )
+
+    return idx, new_seg
+
+
+class OBJECT_OT_GenerateAllStyledRacingLines(Operator):
+    bl_idname = "object.generate_all_styled_racing_lines"
+    bl_label = "Generate Styled Racing Lines"
     bl_description = (
-        "Post-warp Q_RACING_LINE by parametric style sliders → Q_RACING_LINE_STYLED. "
-        "Reads cached widths/centerline stashed by 'Generate Racing Line'."
+        "Auto-discover every per-driver style JSON under "
+        "<project>/F1_Pipeline_Assets/style_params/ that matches the currently "
+        "loaded JSON's grand_prix + season (or all of them if none is loaded), "
+        "and create one Q_RACING_LINE_STYLED_{driver} curve per driver. "
+        "Pulls each driver's hifi-path JSON for lap-fraction corner matching."
     )
 
     def execute(self, context):
@@ -1557,11 +2361,11 @@ class OBJECT_OT_GenerateStyledRacingLine(Operator):
 
         import numpy as np
         from mathutils import Vector
-        from scipy.interpolate import splprep, splev
-        from scipy.spatial import cKDTree
+        from scipy.spatial import cKDTree as _cKDTree
+        import json as _json
+        import os, glob
 
         props = context.scene.f1_track_props
-
         if not props.style_enabled:
             self.report({'INFO'}, "Style layer disabled")
             return {'CANCELLED'}
@@ -1574,14 +2378,6 @@ class OBJECT_OT_GenerateStyledRacingLine(Operator):
             self.report({'ERROR'}, "Style cache missing on Q_RACING_LINE — regenerate it first")
             return {'CANCELLED'}
 
-        cl_qp = np.column_stack([
-            np.array(q_obj["_cl_qp_x"], dtype=float),
-            np.array(q_obj["_cl_qp_y"], dtype=float),
-        ])
-        wr_safe = np.array(q_obj["_wr_safe"], dtype=float)
-        wl_safe = np.array(q_obj["_wl_safe"], dtype=float)
-        n_cl = len(cl_qp)
-
         sp_q = q_obj.data.splines[0]
         n_r = len(sp_q.points)
         raceline = np.zeros((n_r, 2))
@@ -1589,95 +2385,200 @@ class OBJECT_OT_GenerateStyledRacingLine(Operator):
             co = q_obj.matrix_world @ Vector(sp_q.points[i].co[:3])
             raceline[i] = [co.x, co.y]
 
-        corners_cl, corner_id_cl, phase_cl, ks_cl = _detect_corners_on_centerline(cl_qp)
-        if not corners_cl:
-            self.report({'WARNING'}, "No corners detected — style layer has no effect")
+        corners_r, _, _, _ = _v2_detect_corners_arclen(raceline)
+        if not corners_r:
+            self.report({'WARNING'}, "No corners detected on Q_RACING_LINE")
+            return {'CANCELLED'}
 
-        tree = cKDTree(cl_qp)
-        _, nn = tree.query(raceline, k=1)
-
-        corner_id_r = corner_id_cl[nn]
-        phase_r     = phase_cl[nn]
-        ks_r        = ks_cl[nn]
-        wr_r        = wr_safe[nn]
-        wl_r        = wl_safe[nn]
-
-        params = {
-            'master':         props.style_master,
-            'apex_phase':     props.style_apex_phase,
-            'apex_tightness': props.style_apex_tightness,
-            'entry_width':    props.style_entry_width,
-            'exit_width':     props.style_exit_width,
-            'vu_shape':       props.style_vu_shape,
-            'straight_bias':  props.style_straight_bias,
-            'smoothness':     props.style_smoothness,
-            'lr_asymmetry':   props.style_lr_asymmetry,
-        }
-        alpha_style = _compute_alpha_style(corners_cl, corner_id_r, phase_r, ks_r, wr_r, wl_r, params)
-
-        # Warp along Q_RACING_LINE's own right-normals
-        tang_r = np.zeros((n_r, 2))
-        for i in range(n_r):
-            d = raceline[(i + 2) % n_r] - raceline[(i - 2) % n_r]
-            nm = np.linalg.norm(d)
-            tang_r[i] = d / nm if nm > 1e-8 else np.array([1.0, 0.0])
-        nv_r_right = np.column_stack([tang_r[:, 1], -tang_r[:, 0]])
-
-        styled = raceline + alpha_style[:, None] * nv_r_right
-
-        # Safety clip in cl_qp's frame (same convention as the existing containment check)
-        safety_margin = 0.15
-        veh_half = props.racing_line_veh_width * 0.5
-        clipped = 0
-        for i in range(n_r):
-            s = int(nn[i])
+        cl_qp = np.column_stack([
+            np.array(q_obj["_cl_qp_x"], dtype=float),
+            np.array(q_obj["_cl_qp_y"], dtype=float),
+        ])
+        wr_safe_cl = np.array(q_obj["_wr_safe"], dtype=float)
+        wl_safe_cl = np.array(q_obj["_wl_safe"], dtype=float)
+        n_cl = len(cl_qp)
+        nv_cl_all = np.zeros((n_cl, 2))
+        for s in range(n_cl):
             d = cl_qp[(s + 3) % n_cl] - cl_qp[(s - 3) % n_cl]
             nm = np.linalg.norm(d)
             if nm < 1e-8:
+                nv_cl_all[s] = np.array([0.0, -1.0])
+            else:
+                t = d / nm
+                nv_cl_all[s] = np.array([t[1], -t[0]])
+        nn = _cKDTree(cl_qp).query(raceline)[1]
+        nv_cl_r = nv_cl_all[nn]
+        off_raceline = np.einsum('ij,ij->i', raceline - cl_qp[nn], nv_cl_r)
+        veh_half = float(props.racing_line_veh_width) * 0.5
+        safety = 0.15
+        outside_budget = {}
+        for ci, c in enumerate(corners_r):
+            a = int(c['apex'])
+            if c['kappa_sign'] < 0:
+                b = float(wl_safe_cl[nn[a]] + off_raceline[a] - veh_half - safety)
+            else:
+                b = float(wr_safe_cl[nn[a]] - off_raceline[a] - veh_half - safety)
+            outside_budget[ci] = max(0.0, b)
+
+        master = float(props.style_master)
+
+        style_dir = _find_style_params_dir(props)
+        if not style_dir:
+            self.report({'ERROR'},
+                "style_params/ folder not found — set Style JSON path or place "
+                "the .blend in <project_root>/F1_Pipeline_Assets/...")
+            return {'CANCELLED'}
+
+        json_files = sorted(glob.glob(os.path.join(style_dir, "*.json")))
+        if not json_files:
+            self.report({'ERROR'}, f"No style JSONs in {style_dir}")
+            return {'CANCELLED'}
+
+        # Filter by GP+year if a JSON is currently loaded (to avoid making lines
+        # for drivers from a different track sitting in the same folder).
+        filter_gp = None
+        filter_yr = None
+        if props.style_json_path:
+            try:
+                with open(bpy.path.abspath(props.style_json_path), 'r', encoding='utf-8') as fp:
+                    p = _json.load(fp)
+                src = p.get('source', {})
+                filter_gp = str(src.get('grand_prix', '')).strip().lower() or None
+                filter_yr = str(src.get('season', '')).strip() or None
+            except Exception:
+                pass
+
+        print("\n========== STYLED RACING LINES — BATCH ==========", flush=True)
+        print(f"[BATCH] style_dir={style_dir}", flush=True)
+        print(f"[BATCH] {len(json_files)} JSON(s) | filter_gp={filter_gp!r} filter_yr={filter_yr!r}", flush=True)
+        print(f"[BATCH] Q corners={len(corners_r)} | master={master:.3f}", flush=True)
+
+        # Per-Q-station right-normals (computed once, used for both extraction
+        # and re-application).
+        right_normals = _q_right_normals(raceline)
+
+        # Pass 1 — gather raw lateral-offset profiles per driver.
+        profiles = {}            # driver -> np.ndarray(n_r,)
+        sources  = {}            # driver -> dp_obj.name
+        skipped  = []
+        for jf in json_files:
+            try:
+                with open(jf, 'r', encoding='utf-8') as fp:
+                    payload = _json.load(fp)
+            except Exception:
+                skipped.append(f"{os.path.basename(jf)}: parse")
                 continue
-            t_cl = d / nm
-            nv_cl = np.array([t_cl[1], -t_cl[0]])
-            offset = float(np.dot(styled[i] - cl_qp[s], nv_cl))
-            hi = wr_safe[s] - veh_half - safety_margin
-            lo = -wl_safe[s] + veh_half + safety_margin
-            if offset > hi:
-                styled[i] -= (offset - hi) * nv_cl
-                clipped += 1
-            elif offset < lo:
-                styled[i] += (lo - offset) * nv_cl
-                clipped += 1
 
-        # Light periodic-spline resample to iron out any clip kinks
-        sl = np.vstack([styled, styled[0]])
-        arc = np.concatenate([[0], np.cumsum(np.linalg.norm(np.diff(sl, axis=0), axis=1))])
-        s_out = max(1.0, len(sl) * 0.005)
-        try:
-            tck, _ = splprep([sl[:, 0], sl[:, 1]], u=arc, s=s_out, per=True)
-        except Exception:
-            tck, _ = splprep([sl[:, 0], sl[:, 1]], u=arc, s=0, per=True)
-        u_new = np.linspace(0, arc[-1], n_r, endpoint=False)
-        rx, ry = splev(u_new, tck)
-        out = np.column_stack([rx, ry])
+            src = payload.get('source', {})
+            driver = str(src.get('driver', '')).strip()
+            gp = str(src.get('grand_prix', '')).strip().lower()
+            yr = str(src.get('season', '')).strip()
+            if not driver:
+                skipped.append(f"{os.path.basename(jf)}: no driver")
+                continue
+            if filter_gp and gp != filter_gp:
+                continue
+            if filter_yr and yr != filter_yr:
+                continue
 
-        name = "Q_RACING_LINE_STYLED"
-        for d in [bpy.data.objects, bpy.data.curves]:
-            if name in d:
-                d.remove(d[name], do_unlink=True)
-        cd = bpy.data.curves.new(name, 'CURVE')
-        cd.dimensions = '3D'
-        sp_s = cd.splines.new('POLY')
-        sp_s.points.add(n_r - 1)
-        for i in range(n_r):
-            sp_s.points[i].co = (out[i, 0], out[i, 1], 0.0, 1.0)
-        sp_s.use_cyclic_u = True
-        obj_s = bpy.data.objects.new(name, cd)
-        bpy.context.collection.objects.link(obj_s)
+            dp_obj = _resolve_driving_path_obj(driver, context.scene)
+            if dp_obj is None:
+                skipped.append(f"{driver}: no driving_path_* in scene")
+                print(f"[BATCH] {driver}: NO driving_path FOUND — skipping", flush=True)
+                continue
+            driver_path_xy = _curve_world_xy(dp_obj)
+            if driver_path_xy is None:
+                skipped.append(f"{driver}: driving_path malformed")
+                continue
 
-        max_warp = float(np.max(np.abs(alpha_style))) if len(alpha_style) else 0.0
-        self.report({'INFO'},
-            f"Q_RACING_LINE_STYLED: {n_r} pts, {len(corners_cl)} corners, "
-            f"max|α_style|={max_warp:.2f} BU, clipped={clipped}")
-        return {'FINISHED'}
+            try:
+                profile = _extract_offset_profile(
+                    raceline, corners_r, right_normals, driver_path_xy,
+                    smooth_sigma=3.0, taper_frac=0.15, max_clip=5.0,
+                )
+            except Exception as e:
+                skipped.append(f"{driver}: extract {e}")
+                continue
+
+            profiles[driver] = profile
+            sources[driver] = (dp_obj.name, len(driver_path_xy))
+
+        if not profiles:
+            print("[BATCH] no profiles gathered", flush=True)
+            print("========== BATCH END ==========\n", flush=True)
+            self.report({'WARNING'}, f"Generated 0; skipped {len(skipped)}: {'; '.join(skipped)[:160]}")
+            return {'CANCELLED'}
+
+        # Average across drivers — the lap-wide common deviation.
+        all_profiles = np.array(list(profiles.values()))    # (n_drivers, n_r)
+        avg_profile = all_profiles.mean(axis=0)             # (n_r,)
+        n_drivers = len(profiles)
+
+        # Amplification: highlight what makes each driver UNIQUE among the
+        # queued set. With 1 driver, unique=0 → falls back to raw profile.
+        amp = 2.5 if n_drivers >= 2 else 1.0
+
+        print(
+            f"[BATCH] gathered {n_drivers} driver profile(s); "
+            f"applying avg + amp×unique  (amp={amp:.1f})",
+            flush=True,
+        )
+        print(
+            f"[BATCH] avg-profile peak |offset| = {float(np.abs(avg_profile).max()):.2f} m  "
+            f"(common driver-vs-Q deviation, applied at master strength)",
+            flush=True,
+        )
+
+        # Pass 2 — for each driver, build styled = Q + (avg + amp×unique) × master × right_normal.
+        written = []
+        for driver, profile in profiles.items():
+            unique = profile - avg_profile
+            final = master * (avg_profile + amp * unique)
+            final = np.clip(final, -6.0, 6.0)
+            styled = raceline + final[:, None] * right_normals
+
+            curve_name = f"Q_RACING_LINE_STYLED_{driver}"
+            for d in [bpy.data.objects, bpy.data.curves]:
+                if curve_name in d:
+                    d.remove(d[curve_name], do_unlink=True)
+            cd = bpy.data.curves.new(curve_name, 'CURVE')
+            cd.dimensions = '3D'
+            sp_s = cd.splines.new('POLY')
+            sp_s.points.add(n_r - 1)
+            for i in range(n_r):
+                sp_s.points[i].co = (styled[i, 0], styled[i, 1], 0.0, 1.0)
+            sp_s.use_cyclic_u = True
+            obj_s = bpy.data.objects.new(curve_name, cd)
+            bpy.context.collection.objects.link(obj_s)
+
+            delta_total = float(np.linalg.norm(styled - raceline, axis=1).max())
+            unique_peak = float(np.abs(unique).max())
+            src_name, src_pts = sources[driver]
+            print(
+                f"[BATCH] {driver}: source={src_name} ({src_pts} pts) | "
+                f"unique_peak={unique_peak:.2f}m | total_delta={delta_total:.2f}m | "
+                f"wrote {curve_name}",
+                flush=True,
+            )
+            print(f"[STYLE-DRIVER] {driver}: per-corner UNIQUE offset (driver - avg):", flush=True)
+            for ci, c in enumerate(corners_r):
+                u_at_apex = float(unique[int(c['apex'])])
+                f_at_apex = float(final[int(c['apex'])])
+                print(
+                    f"  c{ci:02d} L={c['L']:3d} ks={c['kappa_sign']:+d}  "
+                    f"unique@apex={u_at_apex:+.2f}m  final@apex={f_at_apex:+.2f}m",
+                    flush=True,
+                )
+            written.append(driver)
+
+        print(f"[BATCH] Done: {len(written)} written, {len(skipped)} skipped", flush=True)
+        print("========== BATCH END ==========\n", flush=True)
+
+        if written:
+            self.report({'INFO'}, f"Generated {len(written)} styled racing lines: {', '.join(written)}")
+            return {'FINISHED'}
+        self.report({'WARNING'}, f"Generated 0; skipped {len(skipped)}: {'; '.join(skipped)[:160]}")
+        return {'CANCELLED'}
 
 
 class OBJECT_OT_LoadStyleFromJson(Operator):
@@ -1726,8 +2627,20 @@ class OBJECT_OT_LoadStyleFromJson(Operator):
                     pass
 
         src = payload.get("source", {})
-        tag = f"{src.get('driver','?')}/{src.get('grand_prix','?')}/{src.get('season','?')}"
-        self.report({'INFO'}, f"Loaded {len(loaded)}/8 params from {tag}")
+        driver = str(src.get("driver", "")).strip() or "DRIVER"
+        context.scene["_style_driver"] = driver
+
+        corners_in = payload.get("corners")
+        if isinstance(corners_in, list) and corners_in:
+            context.scene["_style_corners"] = json.dumps(corners_in)
+            corner_msg = f", {len(corners_in)} per-corner entries"
+        else:
+            if "_style_corners" in context.scene:
+                del context.scene["_style_corners"]
+            corner_msg = " (no per-corner data — JSON v1)"
+
+        tag = f"{driver}/{src.get('grand_prix','?')}/{src.get('season','?')}"
+        self.report({'INFO'}, f"Loaded {len(loaded)}/8 params from {tag}{corner_msg}")
         return {'FINISHED'}
 
 
@@ -1746,14 +2659,14 @@ class OBJECT_OT_AlignPathToRacingLine(Operator):
 
         props = context.scene.f1_track_props
         path = props.driving_path
-        target_name = "Q_RACING_LINE_STYLED" if props.alignment_target == 'RACING_LINE_STYLED' else "Q_RACING_LINE"
-        q_obj = bpy.data.objects.get(target_name)
+        q_obj = props.alignment_target_curve
+        target_name = q_obj.name if q_obj else "(none)"
 
         if not path:
             self.report({'ERROR'}, "Select a Driving Path")
             return {'CANCELLED'}
         if not q_obj:
-            self.report({'ERROR'}, f"Generate {target_name} first")
+            self.report({'ERROR'}, "Pick a Target Line via the eyedropper")
             return {'CANCELLED'}
 
         N = props.alignment_samples
@@ -1923,6 +2836,126 @@ class OBJECT_OT_AlignPathToRacingLine(Operator):
         return {'FINISHED'}
 
 
+class OBJECT_OT_AlignAllDriverPaths(Operator):
+    bl_idname = "object.align_all_driver_paths"
+    bl_label = "Align All Driver Paths"
+    bl_description = (
+        "For every Q_RACING_LINE_STYLED_{driver} in the scene, find the matching "
+        "F1_Path_*{driver}* curve and Kabsch-align it. Uses the same alignment_blend "
+        "/ alignment_samples / overwrite_source_path settings as the single-path button."
+    )
+
+    def execute(self, context):
+        scene = context.scene
+        props = scene.f1_track_props
+
+        styled_lines = [
+            o for o in scene.objects
+            if o.type == 'CURVE' and o.name.startswith("Q_RACING_LINE_STYLED_")
+            and o.name not in ("Q_RACING_LINE_STYLED",)
+        ]
+        if not styled_lines:
+            self.report({'ERROR'},
+                "No Q_RACING_LINE_STYLED_{driver} curves in scene — run 'Generate Styled Racing Lines' first")
+            return {'CANCELLED'}
+
+        # Driving paths: ONLY curves named driving_path_* (those are the rig-followed
+        # curves that the launch_control pipeline creates; LC_Trail_* are mesh trails
+        # and not what the cars follow).
+        driving_paths = [
+            o for o in scene.objects
+            if o.type == 'CURVE' and o.name.startswith("driving_path_")
+        ]
+        # Trails are kept as a SECONDARY index: their names always carry the rig
+        # suffix (incl. driver code), which lets us back-map a driver to a
+        # team-only-named driving_path (e.g. driving_path_Mclaren ← Norris).
+        trails = [
+            o for o in scene.objects
+            if o.type == 'CURVE' and o.name.startswith("LC_Trail_")
+        ]
+
+        print("\n========== ALIGN ALL — DEBUG ==========", flush=True)
+        print(f"[ALIGN] styled lines in scene: {[o.name for o in styled_lines]}", flush=True)
+        print(f"[ALIGN] driving paths in scene: {[o.name for o in driving_paths]}", flush=True)
+        print(f"[ALIGN] trails in scene       : {[o.name for o in trails]}", flush=True)
+
+        if not driving_paths:
+            print("[ALIGN] *** no driving_path_* curves found ***", flush=True)
+            print("========== ALIGN ALL — END ==========\n", flush=True)
+            self.report({'ERROR'},
+                "No driving_path_* curves in scene")
+            return {'CANCELLED'}
+
+        def _resolve_driving_path(driver_code):
+            du = driver_code.upper()
+            # 1. Direct: driving_path whose name itself carries the driver code.
+            for p in driving_paths:
+                if du in p.name.upper():
+                    return p, "direct-name"
+            # 2. Indirect via trail: find a trail with driver code, extract its
+            #    rig suffix, then look up driving_path_<suffix> or progressively
+            #    shorter prefixes of the suffix.
+            for t in trails:
+                if du not in t.name.upper():
+                    continue
+                suffix = t.name
+                for prefix in ("LC_Trail_car_rig_", "LC_Trail_"):
+                    if suffix.startswith(prefix):
+                        suffix = suffix[len(prefix):]
+                        break
+                parts = suffix.split("_")
+                for i in range(len(parts), 0, -1):
+                    candidate_name = "driving_path_" + "_".join(parts[:i])
+                    p = scene.objects.get(candidate_name)
+                    if p is not None and p.type == 'CURVE' and p in driving_paths:
+                        return p, f"trail→suffix({'_'.join(parts[:i])})"
+            return None, None
+
+        old_path = props.driving_path
+        old_target = props.alignment_target_curve
+        aligned, skipped = [], []
+        for line in styled_lines:
+            driver = line.name.rsplit("_", 1)[-1]
+            cand, how = _resolve_driving_path(driver)
+            if cand is None:
+                skipped.append(f"{driver}: no driving_path_*{driver}* found (direct or via trail)")
+                print(f"[ALIGN] {driver}: NO MATCH", flush=True)
+                continue
+            try:
+                props.driving_path = cand
+                props.alignment_target_curve = line
+                bpy.ops.object.align_path_to_racing_line()
+                aligned.append(f"{cand.name} → {line.name}")
+                print(f"[ALIGN] {driver} ({how}): {cand.name} → {line.name} OK", flush=True)
+            except Exception as e:
+                skipped.append(f"{driver}: {e}")
+                print(f"[ALIGN] {driver}: FAILED — {e}", flush=True)
+
+        props.driving_path = old_path
+        props.alignment_target_curve = old_target
+
+        # Refresh trails so they re-bake from the modified driving paths
+        # (launch_control's trail meshes reference the path geometry; without
+        # this, trails stay on the old shape).
+        try:
+            bpy.ops.f1.refresh_trails()
+            print("[ALIGN] f1.refresh_trails() OK — trails re-synced from updated paths", flush=True)
+        except Exception as e:
+            print(f"[ALIGN] f1.refresh_trails() skipped: {e}", flush=True)
+
+        print(f"[ALIGN] Done: {len(aligned)} aligned, {len(skipped)} skipped", flush=True)
+        print("========== ALIGN ALL — END ==========\n", flush=True)
+
+        if aligned:
+            msg = f"Aligned {len(aligned)} path(s)"
+            if skipped:
+                msg += f", skipped {len(skipped)}: {'; '.join(skipped)[:120]}"
+            self.report({'INFO'}, msg)
+            return {'FINISHED'}
+        self.report({'WARNING'}, f"Aligned 0; skipped {len(skipped)}: {'; '.join(skipped)[:160]}")
+        return {'CANCELLED'}
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # UI PANEL
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2016,21 +3049,28 @@ class VIEW3D_PT_F1TrackPanel(Panel):
         col.prop(props, "style_smoothness", slider=True)
         col.prop(props, "style_lr_asymmetry", slider=True)
         col.separator()
-        col.label(text="From Race Replay Studio:")
+        col.label(text="Style JSON folder (auto-discovered):")
         col.prop(props, "style_json_path")
-        col.operator("object.load_style_from_json", icon='IMPORT')
         row = box.row()
         row.enabled = deps_ok
-        row.operator("object.generate_styled_racing_line", icon='MOD_CURVE')
+        row.scale_y = 1.4
+        row.operator("object.generate_all_styled_racing_lines", icon='MOD_CURVE')
 
         box = layout.box()
         box.label(text="6. Path Alignment / Reshape", icon='CON_ROTLIKE')
         col = box.column(align=True)
-        col.prop(props, "driving_path", icon='CURVE_BEZCURVE')
-        col.prop(props, "alignment_target")
         col.prop(props, "alignment_samples")
         col.prop(props, "alignment_blend", slider=True)
         col.prop(props, "overwrite_source_path")
+        col.separator()
+        row = box.row()
+        row.enabled = deps_ok
+        row.scale_y = 1.4
+        row.operator("object.align_all_driver_paths", icon='CON_ROTLIKE')
+        col.separator()
+        col.label(text="Single-path manual mode:")
+        col.prop(props, "driving_path", icon='CURVE_BEZCURVE')
+        col.prop(props, "alignment_target_curve", icon='OUTLINER_OB_CURVE')
         row = box.row()
         row.enabled = deps_ok
         row.operator("object.align_path_to_racing_line", icon='CON_ROTLIKE')
@@ -2047,9 +3087,10 @@ classes = (
     OBJECT_OT_CreateTrackFromCSV,
     OBJECT_OT_GenerateCenterline,
     OBJECT_OT_GenerateRacingLine,
-    OBJECT_OT_GenerateStyledRacingLine,
+    OBJECT_OT_GenerateAllStyledRacingLines,
     OBJECT_OT_LoadStyleFromJson,
     OBJECT_OT_AlignPathToRacingLine,
+    OBJECT_OT_AlignAllDriverPaths,
     VIEW3D_PT_F1TrackPanel,
 )
 
