@@ -356,6 +356,39 @@ def _pipeline_finish():
 
     print(f"[F1 Studio] ═══ ALL {len(_pipeline_queue)} CARS COMPLETE ═══")
 
+    # ─── AUTO-CHAIN: track viz pipeline ──────────────────────────────────────
+    # After all cars + driving paths are loaded and track-aligned, automatically
+    # produce per-driver styled racing lines and align each driver's path to
+    # their own styled line. Two operators (provided by the F1 Track Visualizer
+    # standalone addon) get called via bpy.ops:
+    #   1. object.generate_all_styled_racing_lines
+    #   2. object.align_all_driver_paths   (also refreshes trails)
+    #
+    # Centerline + Q_RACING_LINE generation are NOT auto-run here — those are
+    # one-time-per-track setup steps that need manual parameter input (track
+    # mesh eyedropper, IQP knobs). If Q_RACING_LINE is missing in the scene
+    # we error out and tell the user to run that setup once.
+    if bpy.data.objects.get("Q_RACING_LINE") is None:
+        print("[F1 Studio] ╔══════════════════════════════════════════════════════════")
+        print("[F1 Studio] ║ AUTO-CHAIN SKIPPED: Q_RACING_LINE not in scene.")
+        print("[F1 Studio] ║ This is a one-time-per-track setup step:")
+        print("[F1 Studio] ║   - F1 Track Visualizer panel → Generate Centerline")
+        print("[F1 Studio] ║   - F1 Track Visualizer panel → Generate Racing Line")
+        print("[F1 Studio] ║ Save the .blend afterwards. Then click Generate Scene")
+        print("[F1 Studio] ║ again — styled lines + alignment will run automatically.")
+        print("[F1 Studio] ╚══════════════════════════════════════════════════════════")
+    else:
+        print("[F1 Studio] auto-chain: styled lines → align all driver paths")
+        try:
+            bpy.ops.object.generate_all_styled_racing_lines()
+        except Exception as e:
+            print(f"[F1 Studio] auto-chain: generate_all_styled_racing_lines failed: {e}")
+        try:
+            bpy.ops.object.align_all_driver_paths()
+        except Exception as e:
+            print(f"[F1 Studio] auto-chain: align_all_driver_paths failed: {e}")
+        print("[F1 Studio] auto-chain DONE — driver paths aligned to per-driver styled lines")
+
 
 class OBJECT_OT_f1_generate_scene(Operator):
     bl_idname = "f1.generate_scene"

@@ -1904,7 +1904,7 @@ def _q_right_normals(raceline):
 
 
 def _extract_offset_profile(raceline, q_corners, right_normals, driver_path_xy,
-                            smooth_sigma=3.0, taper_frac=0.15, max_clip=5.0):
+                            smooth_sigma=3.0, taper_frac=0.15, max_clip=2.5):
     """Returns a per-station signed lateral offset profile (n_r,) extracted from
     the driver's path: closest-point projection onto Q's right-normals, masked
     to corner stations only, cosine-tapered at corner boundaries, lightly
@@ -2267,14 +2267,20 @@ def _v3_asymmetric_bell(L, peak_phase, sharpness=1.0):
 
 
 def _v3_reshape_corner(coords, c, ap_phase, tight, vu,
-                       outside_budget_at_apex=None,
-                       max_drift=3.5, max_loose=1.5,
+                       inside_budget_at_apex=None,
+                       max_inset=1.5, max_shift_frac=0.20,
                        _dbg=False, _dbg_tag=""):
-    """Apply a smooth, bounded OUTSIDE drift to one corner. The bump shape is a
-    power-warped cosine bell — zero value AND zero slope at the corner's entry
-    and exit, peak slid to (0.5 − 0.4·apex_phase) of the corner. Result: smooth
-    tangent transition between corner and straight (no boundary kink), no
-    deviation propagating into the straights."""
+    """Apply a smooth, bounded INSIDE bump to one corner. THIS IS THE
+    'no-bumps' VERSION the user accepted earlier in the session.
+       • Bump direction: -kappa_sign × right_normal (toward the apex inside).
+       • Bump shape: gaussian centered at A_new = A_0 + apex_phase × max_shift × L,
+         anchored to zero at corner entry/exit via endpoint subtraction.
+       • Width controlled by vu_shape (V narrow, U broad).
+       • Magnitude: tight × max_inset (NOT |ap_phase| × big-multiplier).
+       • Track-clipped against the INSIDE budget at apex — this naturally
+         clamps most apexes to ~0 because Q's min-curvature line already hugs
+         the inside kerb. So most corners barely move from Q. That IS the
+         'no bumps' look the user said worked."""
     import numpy as np
 
     n = len(coords)
@@ -2286,7 +2292,6 @@ def _v3_reshape_corner(coords, c, ap_phase, tight, vu,
     seg = coords[idx].copy()
     A_0 = _v3_apex_local_index(c, n, L)
 
-    # Outside direction = +kappa_sign × right_normal (away from apex inside).
     iA = A_0
     p_back = max(0, iA - 3)
     p_fwd = min(L - 1, iA + 3)
@@ -2296,46 +2301,36 @@ def _v3_reshape_corner(coords, c, ap_phase, tight, vu,
         return idx, seg
     chord /= cn
     right_normal = np.array([chord[1], -chord[0]])
-    outside_dir = +float(c['kappa_sign']) * right_normal
+    inside_dir = -float(c['kappa_sign']) * right_normal
 
-    # Bump peak phase: late apex (ap>0) → entry side; early apex (ap<0) → exit side.
-    bump_phase = 0.5 - 0.4 * float(ap_phase)               # ap=+1 → 0.1, ap=-1 → 0.9
-    drift_mag = abs(float(ap_phase)) * float(max_drift)
+    shift = float(ap_phase) * float(max_shift_frac) * float(L)
+    A_new = float(np.clip(A_0 + shift, 1.0, L - 2.0))
 
-    # vu_shape: -1 → sharp (peakier), +1 → broad (rounder). Maps to bell exponent.
-    sharpness = float(np.clip(1.0 - 0.4 * float(vu), 0.5, 1.6))
+    sigma_bump = float(L) * (0.10 + 0.075 * (float(vu) + 1.0))
+    sigma_bump = max(sigma_bump, 1.5)
 
-    w_drift = _v3_asymmetric_bell(L, bump_phase, sharpness=sharpness)
+    i_arr = np.arange(L, dtype=float)
+    w = np.exp(-((i_arr - A_new) ** 2) / (2.0 * sigma_bump ** 2))
+    w_endpoint = float(max(w[0], w[-1]))
+    w = np.maximum(0.0, w - w_endpoint) / max(1.0 - w_endpoint, 1e-6)
 
-    # Loose-driver kicker: a centered, symmetric bell at the natural apex.
-    loose_mag = max(0.0, 0.5 - float(tight)) * float(max_loose)
-    apex_phase_norm = float(A_0) / float(L - 1)
-    w_loose = _v3_asymmetric_bell(L, apex_phase_norm, sharpness=1.4)
+    inset_req = float(tight) * float(max_inset)
+    if inside_budget_at_apex is not None:
+        budget_clip = float(max(0.0, inside_budget_at_apex))
+        inset = min(inset_req, budget_clip)
+        clipped_by_track = inset < inset_req - 1e-4
+    else:
+        inset = inset_req
+        clipped_by_track = False
 
-    outward = w_drift * drift_mag + w_loose * loose_mag    # (L,)
-
-    # Track-width clip against the outside budget at apex (the conservative point
-    # — outside budget is largest near apex on Q's IQP line, smallest near
-    # entry/exit; using apex value keeps the bump inside the kerb at its peak,
-    # and the gaussian decays toward entry/exit so we never push closer to the
-    # outside kerb than the apex value).
-    clipped = False
-    if outside_budget_at_apex is not None:
-        max_allowed = float(max(0.0, outside_budget_at_apex))
-        peak = float(outward.max())
-        if peak > max_allowed and peak > 1e-6:
-            outward *= max_allowed / peak
-            clipped = True
-
-    new_seg = seg + outward[:, None] * outside_dir[None, :]
+    new_seg = seg + (w * inset)[:, None] * inside_dir[None, :]
 
     if _dbg:
         max_dev = float(np.linalg.norm(new_seg - seg, axis=1).max())
-        clip_tag = " *TRACK-CLIP*" if clipped else ""
+        clip_tag = " *TRACK-CLIP*" if clipped_by_track else ""
         print(
-            f"[V3-DBG]   {_dbg_tag} L={L} A_0={A_0} bump_idx={bump_center_idx:.1f} "
-            f"ap={ap_phase:+.3f} tight={tight:.3f} vu={vu:+.3f} "
-            f"drift_mag={drift_mag:.2f}m loose_mag={loose_mag:.2f}m{clip_tag} "
+            f"[V3-DBG]   {_dbg_tag} L={L} A_0={A_0} A_new={A_new:.1f} ap={ap_phase:+.3f} "
+            f"tight={tight:.3f} vu={vu:+.3f} inset_req={inset_req:.2f}m inset={inset:.2f}m{clip_tag} "
             f"sigma_bump={sigma_bump:.1f} max_dev={max_dev:.3f}m",
             flush=True,
         )
@@ -2411,14 +2406,16 @@ class OBJECT_OT_GenerateAllStyledRacingLines(Operator):
         off_raceline = np.einsum('ij,ij->i', raceline - cl_qp[nn], nv_cl_r)
         veh_half = float(props.racing_line_veh_width) * 0.5
         safety = 0.15
-        outside_budget = {}
+        inside_budget = {}
         for ci, c in enumerate(corners_r):
             a = int(c['apex'])
             if c['kappa_sign'] < 0:
-                b = float(wl_safe_cl[nn[a]] + off_raceline[a] - veh_half - safety)
-            else:
+                # right turn → inside is RIGHT
                 b = float(wr_safe_cl[nn[a]] - off_raceline[a] - veh_half - safety)
-            outside_budget[ci] = max(0.0, b)
+            else:
+                # left turn → inside is LEFT
+                b = float(wl_safe_cl[nn[a]] + off_raceline[a] - veh_half - safety)
+            inside_budget[ci] = max(0.0, b)
 
         master = float(props.style_master)
 
@@ -2453,14 +2450,14 @@ class OBJECT_OT_GenerateAllStyledRacingLines(Operator):
         print(f"[BATCH] {len(json_files)} JSON(s) | filter_gp={filter_gp!r} filter_yr={filter_yr!r}", flush=True)
         print(f"[BATCH] Q corners={len(corners_r)} | master={master:.3f}", flush=True)
 
-        # Per-Q-station right-normals (computed once, used for both extraction
-        # and re-application).
-        right_normals = _q_right_normals(raceline)
-
-        # Pass 1 — gather raw lateral-offset profiles per driver.
-        profiles = {}            # driver -> np.ndarray(n_r,)
-        sources  = {}            # driver -> dp_obj.name
-        skipped  = []
+        # ─── REVERTED to the WORKING version (inside-bump + inside_budget clip) ──
+        # Per-driver styled line: for each Q corner, place an inside-direction
+        # gaussian bump anchored at entry/exit, magnitude = tight × max_inset,
+        # clipped against inside_budget at apex. Q hugs the inside kerb at every
+        # apex, so inside_budget is usually ~0 → most apexes clamp to 0 → no bumps.
+        # Per-corner JSON style (apex_phase, apex_tightness, vu_shape) is matched
+        # from each driver's hifi-path via lap-fraction.
+        written = []
         for jf in json_files:
             try:
                 with open(jf, 'r', encoding='utf-8') as fp:
@@ -2481,61 +2478,49 @@ class OBJECT_OT_GenerateAllStyledRacingLines(Operator):
             if filter_yr and yr != filter_yr:
                 continue
 
-            dp_obj = _resolve_driving_path_obj(driver, context.scene)
-            if dp_obj is None:
-                skipped.append(f"{driver}: no driving_path_* in scene")
-                print(f"[BATCH] {driver}: NO driving_path FOUND — skipping", flush=True)
-                continue
-            driver_path_xy = _curve_world_xy(dp_obj)
-            if driver_path_xy is None:
-                skipped.append(f"{driver}: driving_path malformed")
-                continue
+            json_params  = payload.get('style_params', {}) or {}
+            json_corners = payload.get('corners') or []
 
-            try:
-                profile = _extract_offset_profile(
-                    raceline, corners_r, right_normals, driver_path_xy,
-                    smooth_sigma=3.0, taper_frac=0.15, max_clip=5.0,
+            # Lap-fraction match: detect SAI's corners on its hifi-path, pair
+            # by arc-length position with Q's corners.
+            hifi_file = _v3_find_hifi_path(driver, props)
+            sai_xy = _v3_load_hifi_xy(hifi_file) if hifi_file else None
+            per_corner_data = [None] * len(corners_r)
+            if sai_xy is not None and json_corners:
+                sai_corners_det, _, _, _ = _v2_detect_corners_arclen(sai_xy)
+                if sai_corners_det:
+                    matched = _v3_match_corners_lap_fraction(
+                        corners_r, raceline, sai_corners_det, sai_xy, max_diff=0.06,
+                    )
+                    for qi, sj in enumerate(matched):
+                        if sj is not None and 0 <= sj < len(json_corners):
+                            per_corner_data[qi] = json_corners[sj]
+            n_match = sum(1 for d in per_corner_data if d is not None)
+
+            g_ap = float(json_params.get('apex_phase', 0.0))
+            g_at = float(json_params.get('apex_tightness', 0.5))
+            g_vu = float(json_params.get('vu_shape', 0.0))
+
+            styled = raceline.copy()
+            for ci, c in enumerate(corners_r):
+                d_co = per_corner_data[ci]
+                if d_co is not None:
+                    ap = float(d_co.get('apex_phase', g_ap))
+                    at = float(d_co.get('apex_tightness', g_at))
+                    vu = float(d_co.get('vu_shape', g_vu))
+                else:
+                    ap, at, vu = g_ap, g_at, g_vu
+
+                ap_eff = ap * master
+                at_eff = 0.5 + (at - 0.5) * master
+                vu_eff = vu * master
+
+                idx, new_seg = _v3_reshape_corner(
+                    raceline, c, ap_eff, at_eff, vu_eff,
+                    inside_budget_at_apex=inside_budget.get(ci),
+                    max_inset=1.5, max_shift_frac=0.20,
                 )
-            except Exception as e:
-                skipped.append(f"{driver}: extract {e}")
-                continue
-
-            profiles[driver] = profile
-            sources[driver] = (dp_obj.name, len(driver_path_xy))
-
-        if not profiles:
-            print("[BATCH] no profiles gathered", flush=True)
-            print("========== BATCH END ==========\n", flush=True)
-            self.report({'WARNING'}, f"Generated 0; skipped {len(skipped)}: {'; '.join(skipped)[:160]}")
-            return {'CANCELLED'}
-
-        # Average across drivers — the lap-wide common deviation.
-        all_profiles = np.array(list(profiles.values()))    # (n_drivers, n_r)
-        avg_profile = all_profiles.mean(axis=0)             # (n_r,)
-        n_drivers = len(profiles)
-
-        # Amplification: highlight what makes each driver UNIQUE among the
-        # queued set. With 1 driver, unique=0 → falls back to raw profile.
-        amp = 2.5 if n_drivers >= 2 else 1.0
-
-        print(
-            f"[BATCH] gathered {n_drivers} driver profile(s); "
-            f"applying avg + amp×unique  (amp={amp:.1f})",
-            flush=True,
-        )
-        print(
-            f"[BATCH] avg-profile peak |offset| = {float(np.abs(avg_profile).max()):.2f} m  "
-            f"(common driver-vs-Q deviation, applied at master strength)",
-            flush=True,
-        )
-
-        # Pass 2 — for each driver, build styled = Q + (avg + amp×unique) × master × right_normal.
-        written = []
-        for driver, profile in profiles.items():
-            unique = profile - avg_profile
-            final = master * (avg_profile + amp * unique)
-            final = np.clip(final, -6.0, 6.0)
-            styled = raceline + final[:, None] * right_normals
+                styled[idx] = new_seg
 
             curve_name = f"Q_RACING_LINE_STYLED_{driver}"
             for d in [bpy.data.objects, bpy.data.curves]:
@@ -2552,23 +2537,11 @@ class OBJECT_OT_GenerateAllStyledRacingLines(Operator):
             bpy.context.collection.objects.link(obj_s)
 
             delta_total = float(np.linalg.norm(styled - raceline, axis=1).max())
-            unique_peak = float(np.abs(unique).max())
-            src_name, src_pts = sources[driver]
             print(
-                f"[BATCH] {driver}: source={src_name} ({src_pts} pts) | "
-                f"unique_peak={unique_peak:.2f}m | total_delta={delta_total:.2f}m | "
-                f"wrote {curve_name}",
+                f"[BATCH] {driver}: {n_match}/{len(corners_r)} per-corner JSON matched | "
+                f"max_delta={delta_total:.2f}m | wrote {curve_name}",
                 flush=True,
             )
-            print(f"[STYLE-DRIVER] {driver}: per-corner UNIQUE offset (driver - avg):", flush=True)
-            for ci, c in enumerate(corners_r):
-                u_at_apex = float(unique[int(c['apex'])])
-                f_at_apex = float(final[int(c['apex'])])
-                print(
-                    f"  c{ci:02d} L={c['L']:3d} ks={c['kappa_sign']:+d}  "
-                    f"unique@apex={u_at_apex:+.2f}m  final@apex={f_at_apex:+.2f}m",
-                    flush=True,
-                )
             written.append(driver)
 
         print(f"[BATCH] Done: {len(written)} written, {len(skipped)} skipped", flush=True)
