@@ -1,6 +1,6 @@
 import bpy
 
-from . import animation, camera, custom_anim_presets, rig, append, physics, jump, extra, path, exports, speed_segment, lap_from_json, F1_HiFi_Baker_Pro, f1_pipeline, path_brush, heli_cam, f1_trail
+from . import animation, camera, custom_anim_presets, rig, append, physics, jump, extra, path, exports, speed_segment, lap_from_json, F1_HiFi_Baker_Pro, f1_pipeline, path_brush, heli_cam, f1_trail, f1_track_viz
 from ..data.properties import is_pro_license
 
 if is_pro_license:
@@ -120,8 +120,10 @@ def register():
     f1_pipeline.register()
     path_brush.register()
     heli_cam.register()
+    f1_track_viz.register()
 
 def unregister():
+    f1_track_viz.unregister()
     heli_cam.unregister()
     path_brush.unregister()
     f1_pipeline.unregister()

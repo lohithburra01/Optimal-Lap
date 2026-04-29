@@ -1,3 +1,19 @@
+"""f1_track_viz — track-viz operators integrated into launch_control.
+
+Originally a standalone addon (f1_track_visualizer_addonLastLastLasttry5.py).
+Now a sub-module of launch_control. All operators register via this module's
+register() function, called from launch_control/operators/__init__.py.
+
+Owns:
+  • F1TrackVizProperties (scene.f1_track_props PointerProperty)
+  • Dep installer (isolated to modules/f1_track_viz_deps)
+  • Centerline + Q racing line generation (one-time per track)
+  • Per-driver styled racing lines (data-driven)
+  • Path alignment (single-path manual + batch align-all)
+
+Operator bl_idnames are unchanged from the standalone, so existing
+bpy.ops.object.* calls in f1_pipeline.py auto-chain still work.
+"""
 import bpy
 import os
 import sys
@@ -13,15 +29,6 @@ from bpy.props import (
     BoolProperty, IntProperty, PointerProperty
 )
 
-bl_info = {
-    "name": "F1 Track Visualizer",
-    "author": "Lohith Burra",
-    "version": (3, 2),
-    "blender": (4, 0, 0),
-    "location": "View3D > Sidebar > F1 Track Tab",
-    "description": "Visualize F1 tracks with centerline, style-based racing line, and Kabsch alignment",
-    "category": "3D View",
-}
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # DEPENDENCY MANAGEMENT
@@ -32,7 +39,7 @@ def get_modules_path():
     # our own subfolder lets us install/upgrade/clean without colliding with
     # other addons' deps (or leftover stale wheels from earlier failed runs).
     return bpy.utils.user_resource(
-        "SCRIPTS", path="modules/f1_track_visualizer_deps", create=True
+        "SCRIPTS", path="modules/f1_track_viz_deps", create=True
     )
 
 def append_modules_to_sys_path(modules_path):
@@ -455,7 +462,7 @@ def _compute_alpha_style(corners, corner_id, phase, kappa_sign, wr_safe, wl_safe
 # PROPERTIES
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class F1TrackProperties(PropertyGroup):
+class F1TrackVizProperties(PropertyGroup):
     # --- Telemetry fetch ---
     season: StringProperty(name="Season", default="2023")
     grand_prix: StringProperty(name="Grand Prix", default="Bahrain")
@@ -640,158 +647,6 @@ class OBJECT_OT_InstallF1Dependencies(Operator):
         else:
             self.report({'WARNING'}, f"{ok}/{len(missing)} installed")
         return {'FINISHED'}
-
-
-class OBJECT_OT_FetchF1Data(Operator):
-    bl_idname = "object.fetch_f1_data"
-    bl_label = "Fetch Telemetry"
-    bl_description = "Fetch FastF1 telemetry → CSV"
-
-    def execute(self, context):
-        if not dependencies_available():
-            self.report({'ERROR'}, "Install dependencies first")
-            return {'CANCELLED'}
-
-        props = context.scene.f1_track_props
-        try:
-            import fastf1
-            import pandas as pd
-
-            os.makedirs(props.cache_dir, exist_ok=True)
-            fastf1.Cache.enable_cache(props.cache_dir)
-
-            session = fastf1.get_session(int(props.season), props.grand_prix, props.session_type)
-            session.load()
-
-            laps = session.laps.pick_driver(props.driver_id)
-            if laps.empty:
-                self.report({'ERROR'}, f"No data for {props.driver_id}")
-                return {'CANCELLED'}
-
-            fastest = laps.loc[laps['LapTime'].idxmin()]
-            telem = fastest.get_telemetry()
-            telem['Time'] = telem['Time'].dt.total_seconds()
-
-            if 'X' not in telem.columns or 'Y' not in telem.columns:
-                self.report({'ERROR'}, "No X/Y in telemetry")
-                return {'CANCELLED'}
-            if 'Z' not in telem.columns:
-                telem['Z'] = 0
-
-            cols = ['Time', 'X', 'Y', 'Z']
-            if 'Speed' in telem.columns:
-                cols.append('Speed')
-
-            base = bpy.path.abspath("//")
-            if base == "":
-                base = tempfile.gettempdir()
-            csv_path = os.path.join(base, f"telemetry_{props.driver_id}_{props.grand_prix}_{props.season}.csv")
-            telem[cols].to_csv(csv_path, index=False)
-            props.csv_file_path = csv_path
-
-            self.report({'INFO'}, f"Saved: {csv_path}")
-            return {'FINISHED'}
-        except Exception as e:
-            self.report({'ERROR'}, str(e))
-            return {'CANCELLED'}
-
-
-class OBJECT_OT_CreateTrackFromCSV(Operator):
-    bl_idname = "object.create_track_from_csv"
-    bl_label = "Create Driving Path"
-    bl_description = "Create curve from CSV telemetry data"
-
-    def execute(self, context):
-        props = context.scene.f1_track_props
-        if not props.csv_file_path:
-            self.report({'ERROR'}, "No CSV file set")
-            return {'CANCELLED'}
-
-        try:
-            coordinates = []
-            with open(props.csv_file_path, 'r') as f:
-                reader = csv.reader(f)
-                header = next(reader)
-                idx = {}
-                for i, col in enumerate(header):
-                    idx[col.upper()] = i
-
-                if 'X' not in idx or 'Y' not in idx:
-                    self.report({'ERROR'}, "CSV needs X and Y columns")
-                    return {'CANCELLED'}
-
-                for row in reader:
-                    x = float(row[idx['X']])
-                    y = float(row[idx['Y']])
-                    z = float(row[idx.get('Z', idx['X'])]) if 'Z' in idx else 0.0
-                    if 'Z' not in idx:
-                        z = 0.0
-                    coordinates.append((x, y, z))
-
-            # Shift to near origin
-            min_x = min(c[0] for c in coordinates)
-            min_y = min(c[1] for c in coordinates)
-            min_z = min(c[2] for c in coordinates)
-            coordinates = [(x - min_x, y - min_y, z - min_z) for x, y, z in coordinates]
-
-            sf = props.scale_factor
-            coordinates = [(x * sf, y * sf, z * sf) for x, y, z in coordinates]
-
-            curve_name = f"driving_path_{props.driver_id}_{props.grand_prix}_{props.season}"
-
-            if curve_name in bpy.data.objects:
-                old = bpy.data.objects[curve_name]
-                bpy.data.objects.remove(old, do_unlink=True)
-            if curve_name in bpy.data.curves:
-                bpy.data.curves.remove(bpy.data.curves[curve_name])
-
-            curve_data = bpy.data.curves.new(name=curve_name, type='CURVE')
-            curve_data.dimensions = '3D'
-
-            if props.curve_type == 'NURBS':
-                spline = curve_data.splines.new(type='NURBS')
-                spline.points.add(len(coordinates) - 1)
-                for i, (x, y, z) in enumerate(coordinates):
-                    spline.points[i].co = (x, y, z, 1.0)
-                spline.use_endpoint_u = True
-                spline.order_u = 4
-                spline.resolution_u = int(props.curve_resolution)
-
-                start, end = coordinates[0], coordinates[-1]
-                dist = sum((a - b) ** 2 for a, b in zip(start, end)) ** 0.5
-                if dist < 10.0:
-                    spline.use_cyclic_u = True
-            else:
-                spline = curve_data.splines.new(type='BEZIER')
-                spline.bezier_points.add(len(coordinates) - 1)
-                for i, (x, y, z) in enumerate(coordinates):
-                    bp = spline.bezier_points[i]
-                    bp.co = (x, y, z)
-                    bp.handle_left_type = 'AUTO'
-                    bp.handle_right_type = 'AUTO'
-
-                start, end = coordinates[0], coordinates[-1]
-                dist = sum((a - b) ** 2 for a, b in zip(start, end)) ** 0.5
-                if dist < 10.0:
-                    spline.use_cyclic_u = True
-
-            curve_data.bevel_depth = props.track_thickness
-            curve_data.bevel_resolution = 4
-
-            obj = bpy.data.objects.new(curve_name, curve_data)
-            bpy.context.collection.objects.link(obj)
-
-            bpy.ops.object.select_all(action='DESELECT')
-            obj.select_set(True)
-            bpy.context.view_layer.objects.active = obj
-
-            props.driving_path = obj
-
-            self.report({'INFO'}, f"Created: {curve_name}")
-            return {'FINISHED'}
-        except Exception as e:
-            self.report({'ERROR'}, str(e))
-            return {'CANCELLED'}
 
 
 class OBJECT_OT_GenerateCenterline(Operator):
@@ -2933,144 +2788,26 @@ class OBJECT_OT_AlignAllDriverPaths(Operator):
 # UI PANEL
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class VIEW3D_PT_F1TrackPanel(Panel):
-    bl_label = "F1 Track Visualizer"
-    bl_idname = "VIEW3D_PT_f1_track_panel"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = 'F1 Track'
-
-    def draw(self, context):
-        layout = self.layout
-        props = context.scene.f1_track_props
-        missing = check_dependencies()
-
-        box = layout.box()
-        if missing:
-            box.label(text="Missing packages:", icon='ERROR')
-            for pkg in missing:
-                box.label(text=f"  • {pkg}")
-            box.operator("object.install_f1_dependencies", icon='IMPORT')
-        else:
-            box.label(text="Dependencies OK", icon='CHECKMARK')
-
-        deps_ok = not bool(missing)
-
-        box = layout.box()
-        box.label(text="1. Fetch Telemetry", icon='IMPORT')
-        col = box.column(align=True)
-        col.prop(props, "season")
-        col.prop(props, "grand_prix")
-        col.prop(props, "session_type")
-        col.prop(props, "driver_id")
-        col.prop(props, "cache_dir")
-        row = box.row()
-        row.enabled = deps_ok
-        row.operator("object.fetch_f1_data", icon='URL')
-
-        box = layout.box()
-        box.label(text="2. Create Driving Path", icon='CURVE_DATA')
-        col = box.column(align=True)
-        col.prop(props, "csv_file_path")
-        col.prop(props, "scale_factor")
-        col.prop(props, "curve_type")
-        col.prop(props, "track_thickness")
-        col.prop(props, "curve_resolution")
-        box.operator("object.create_track_from_csv", icon='MOD_CURVE')
-
-        box = layout.box()
-        box.label(text="3. Centerline Generation", icon='SNAP_MIDPOINT')
-        col = box.column(align=True)
-        col.prop(props, "track_mesh", icon='MESH_PLANE')
-        col.separator()
-        col.prop(props, "centerline_iterations")
-        col.prop(props, "centerline_ray_step")
-        col.prop(props, "centerline_max_width")
-        col.prop(props, "centerline_smooth_sigma")
-        row = box.row()
-        row.enabled = deps_ok
-        row.operator("object.generate_centerline", icon='SNAP_MIDPOINT')
-
-        box = layout.box()
-        box.label(text="4. Racing Line (Min-Curvature)", icon='GP_MULTIFRAME_EDITING')
-        col = box.column(align=True)
-        col.prop(props, "racing_line_inset")
-        col.prop(props, "racing_line_kappa_bound")
-        col.prop(props, "racing_line_veh_width")
-        col.prop(props, "racing_line_stepsize")
-        row = box.row()
-        row.enabled = deps_ok
-        row.operator("object.generate_racing_line", icon='GP_MULTIFRAME_EDITING')
-
-        box = layout.box()
-        box.label(text="5. Style Layer", icon='MOD_CURVE')
-        col = box.column(align=True)
-        col.prop(props, "style_enabled")
-        col.prop(props, "style_master", slider=True)
-        col.separator()
-        col.label(text="Corner Shape:")
-        col.prop(props, "style_apex_phase", slider=True)
-        col.prop(props, "style_apex_tightness", slider=True)
-        col.prop(props, "style_vu_shape", slider=True)
-        col.separator()
-        col.label(text="Lateral Position:")
-        col.prop(props, "style_entry_width", slider=True)
-        col.prop(props, "style_exit_width", slider=True)
-        col.prop(props, "style_straight_bias", slider=True)
-        col.separator()
-        col.label(text="Character:")
-        col.prop(props, "style_smoothness", slider=True)
-        col.prop(props, "style_lr_asymmetry", slider=True)
-        col.separator()
-        col.label(text="Style JSON folder (auto-discovered):")
-        col.prop(props, "style_json_path")
-        row = box.row()
-        row.enabled = deps_ok
-        row.scale_y = 1.4
-        row.operator("object.generate_all_styled_racing_lines", icon='MOD_CURVE')
-
-        box = layout.box()
-        box.label(text="6. Path Alignment / Reshape", icon='CON_ROTLIKE')
-        col = box.column(align=True)
-        col.prop(props, "alignment_samples")
-        col.prop(props, "alignment_blend", slider=True)
-        col.prop(props, "overwrite_source_path")
-        col.separator()
-        row = box.row()
-        row.enabled = deps_ok
-        row.scale_y = 1.4
-        row.operator("object.align_all_driver_paths", icon='CON_ROTLIKE')
-        col.separator()
-        col.label(text="Single-path manual mode:")
-        col.prop(props, "driving_path", icon='CURVE_BEZCURVE')
-        col.prop(props, "alignment_target_curve", icon='OUTLINER_OB_CURVE')
-        row = box.row()
-        row.enabled = deps_ok
-        row.operator("object.align_path_to_racing_line", icon='CON_ROTLIKE')
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # REGISTRATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
 classes = (
-    F1TrackProperties,
+    F1TrackVizProperties,
     OBJECT_OT_InstallF1Dependencies,
-    OBJECT_OT_FetchF1Data,
-    OBJECT_OT_CreateTrackFromCSV,
     OBJECT_OT_GenerateCenterline,
     OBJECT_OT_GenerateRacingLine,
     OBJECT_OT_GenerateAllStyledRacingLines,
     OBJECT_OT_LoadStyleFromJson,
     OBJECT_OT_AlignPathToRacingLine,
     OBJECT_OT_AlignAllDriverPaths,
-    VIEW3D_PT_F1TrackPanel,
 )
 
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
-    bpy.types.Scene.f1_track_props = bpy.props.PointerProperty(type=F1TrackProperties)
+    bpy.types.Scene.f1_track_props = bpy.props.PointerProperty(type=F1TrackVizProperties)
     modules_path = get_modules_path()
     append_modules_to_sys_path(modules_path)
 

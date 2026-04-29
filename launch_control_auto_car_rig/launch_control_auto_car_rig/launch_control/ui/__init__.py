@@ -18,7 +18,8 @@ from .panels import (
         ADDONPREFERENCES_UserPref,
 )
 from . import f1_studio_panel
-# from .menus import MT_Export     
+from . import f1_track_setup_panel
+# from .menus import MT_Export
 from .dialogs import(
         WM_OT_delete_rig_dialog,
         WM_OT_delete_anim_preset_confirm,
@@ -48,6 +49,7 @@ classes_tuple = (
     PANEL_PT_Data,
     ADDONPREFERENCES_UserPref,
     f1_studio_panel.PANEL_PT_F1_Studio,
+    f1_track_setup_panel.PANEL_PT_F1_TrackSetup,
     WM_OT_delete_rig_dialog,
     WM_OT_delete_anim_preset_confirm,
     WM_OT_overwrite_anim_preset_confirm,
