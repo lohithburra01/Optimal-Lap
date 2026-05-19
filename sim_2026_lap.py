@@ -615,15 +615,18 @@ CL_STRAIGHT_M2        = 1.40
 CL_CORNER_M2          = 2.80
 
 # Tire grip
-# MU_LONG — calibrated up from the spec's nominal 1.60. This is the *effective*
-#   lumped longitudinal coefficient: the model computes longitudinal accel as
-#   MU_LONG·(G + downforce/m), so it does NOT separately capture engine
-#   braking or the rearward aero-balance shift that loads the contact patch
-#   under braking. Real F1 cars brake at 5-6 g peak; backing the downforce
-#   term out of that leaves an effective μ_long ~2.0-2.1. 2.10 keeps the lap
-#   time in the spec's 2026 band (72-78 s) — at the spec's 1.60 the sim was
-#   ~79-80 s, structurally above target because of accel/brake transition cost.
-MU_LONG               = 2.10
+# MU_LONG — near-pure longitudinal tyre coefficient. compute_v_brake_backward
+#   computes braking decel as MU_LONG·(G + downforce/MASS_KG) + drag/MASS_KG,
+#   so the downforce and drag terms are ALREADY added separately — MU_LONG is
+#   NOT a lumped aero+tyre coefficient. At 1.60 the model's peak braking is
+#   ~5 g, consistent with the mu_long_obs ≈ 4.83 g extracted from real 2025
+#   Canada Q telemetry (F1_Pipeline_Assets/calibration/vehicle_calibration.json).
+#   A prior calibration pushed this to 2.10 (~6.2 g peak — above real F1's
+#   5-5.5 g) to shave lap time, but MU_LONG barely moves T_lap (the sweep
+#   showed 1.6→79.3 s, 2.1→77.9 s) and 2.10 is physically indefensible.
+#   Reverted to 1.60: T_lap ~79 s is within the spec §6 sanity band [70, 80] s,
+#   and physically-honest braking is worth ~1 s of lap time.
+MU_LONG               = 1.60
 # MU_LAT — calibrated up from the spec's nominal 1.70. At the Montreal
 #   hairpin (L'Épingle) aero downforce is negligible (~70 km/h), so the
 #   *effective* lateral grip coefficient is what carries the corner. Real
