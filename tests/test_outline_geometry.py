@@ -8,6 +8,34 @@ from svg_to_outline import (
     scale_to_length,
     recentre,
 )
+from svg_to_outline import compute_left_normals, generate_edges_constant_width
+
+
+def test_left_normals_orthogonal_to_tangent():
+    R = 10.0
+    th = np.linspace(0.0, 2 * math.pi, 256, endpoint=False)
+    pts = np.column_stack([R * np.cos(th), R * np.sin(th)])
+    nrm = compute_left_normals(pts)
+    # For a CCW circle centred at origin, left-normals point INWARD (toward origin)
+    radial = pts / np.linalg.norm(pts, axis=1, keepdims=True)
+    # nrm dot radial should be approximately -1 everywhere
+    dots = np.einsum("ij,ij->i", nrm, radial)
+    assert dots.mean() == pytest.approx(-1.0, abs=0.02)
+
+
+def test_generate_edges_width_radii():
+    R = 100.0
+    th = np.linspace(0.0, 2 * math.pi, 512, endpoint=False)
+    pts = np.column_stack([R * np.cos(th), R * np.sin(th)])
+    W = 13.0
+    outer, inner = generate_edges_constant_width(pts, W)
+    # CCW loop with left-normal pointing inward:
+    #   inner edge (centerline + W/2 * left_normal) sits at radius R - W/2
+    #   outer edge (centerline - W/2 * left_normal) sits at radius R + W/2
+    r_inner = np.linalg.norm(inner, axis=1).mean()
+    r_outer = np.linalg.norm(outer, axis=1).mean()
+    assert r_inner == pytest.approx(R - W / 2, abs=0.5)
+    assert r_outer == pytest.approx(R + W / 2, abs=0.5)
 
 
 def test_y_flip():

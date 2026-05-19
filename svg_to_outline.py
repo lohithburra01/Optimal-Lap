@@ -203,3 +203,28 @@ def smooth_resample_loop(poly, n_out, smooth_s):
     u_new = np.linspace(0.0, 1.0, n_out, endpoint=False)
     rx, ry = splev(u_new, tck)
     return np.column_stack([rx, ry])
+
+
+# === Edge generation (outer/inner from centerline) =====================
+
+def compute_left_normals(pts):
+    """3-point tangent → left-normal at each station of a closed polyline."""
+    pts = np.asarray(pts, dtype=float)
+    n = len(pts)
+    tang = np.zeros_like(pts)
+    for i in range(n):
+        d = pts[(i + 3) % n] - pts[(i - 3) % n]
+        nm = np.linalg.norm(d)
+        tang[i] = d / nm if nm > 1e-8 else np.array([1.0, 0.0])
+    # Left-normal of tangent (tx, ty) = (-ty, tx)
+    return np.column_stack([-tang[:, 1], tang[:, 0]])
+
+
+def generate_edges_constant_width(centerline, width_m):
+    """Offset the centerline by ±W/2 along the left-normal to get outer/inner.
+    For a CCW loop, left-normal points inward → inner = +W/2·n, outer = -W/2·n."""
+    nrm = compute_left_normals(centerline)
+    half = width_m / 2.0
+    inner = centerline + half * nrm
+    outer = centerline - half * nrm
+    return outer, inner
