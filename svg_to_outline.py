@@ -211,6 +211,13 @@ def smooth_resample_loop(poly, n_out, smooth_s):
 
 # === Edge generation (outer/inner from centerline) =====================
 
+def signed_area(poly):
+    """Shoelace signed area. Positive = CCW, negative = CW (math convention)."""
+    poly = np.asarray(poly, dtype=float)
+    x, y = poly[:, 0], poly[:, 1]
+    return 0.5 * float(np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y))
+
+
 def compute_left_normals(pts):
     """3-point tangent → left-normal at each station of a closed polyline.
 
@@ -337,6 +344,13 @@ def build_outline_from_svg(svg_path):
     scaled = recentre(scaled)
     centerline = smooth_resample_loop(scaled, N_OUTPUT_POINTS, smooth_s=30.0)
 
+    # Enforce CCW orientation so compute_left_normals points inward (toward
+    # the infield) — required for the inner/outer edge labels below to be
+    # physically correct. The Canada SVG centerline is drawn clockwise.
+    if signed_area(centerline) < 0.0:
+        centerline = centerline[::-1].copy()
+        print("[svg_to_outline] centerline was CW; reversed to CCW")
+
     # Per-station widths: constant base, narrow at hairpin (highest |κ| peak)
     kappa = compute_curvature(centerline)
     arc_per_step = TRACK_LENGTH_M / N_OUTPUT_POINTS
@@ -373,8 +387,12 @@ def main():
         "outer": outer.tolist(),
         "inner": inner.tolist(),
     }
-    with open(args.out, "w", encoding="utf-8") as f:
-        json.dump(payload, f)
+    try:
+        with open(args.out, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+    except OSError as e:
+        print(f"[svg_to_outline] failed to write {args.out}: {e}", file=sys.stderr)
+        sys.exit(4)
     print(f"[svg_to_outline] wrote {args.out}")
 
 
