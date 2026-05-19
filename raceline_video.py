@@ -647,34 +647,45 @@ def run_iqp(centerline, w_right, w_left):
 # Stage 3: Telemetry  →  animation timing
 # =============================================================
 
-def load_ver_telemetry(csv_path):
-    """Read time_s, distance, speed columns. Speed is km/h in source.
-    Returns: (times[s], distances[m], speeds[m/s], lap_time[s]) sorted, deduped."""
+def load_telemetry(csv_path):
+    """Read time_s, distance, speed (km/h → m/s), and optionally soc_pct + mode.
+    Returns: (times, distances, speeds_ms, lap_time, soc_or_None, mode_or_None)."""
     rows = []
+    has_soc = has_mode = False
     with open(csv_path, "r", encoding="utf-8") as f:
-        for r in csv.DictReader(f):
+        reader = csv.DictReader(f)
+        has_soc  = "soc_pct" in reader.fieldnames
+        has_mode = "mode"    in reader.fieldnames
+        for r in reader:
             try:
-                rows.append((float(r['time_s']),
-                             float(r['distance']),
-                             float(r['speed']) / 3.6))
+                row = {
+                    "t":    float(r["time_s"]),
+                    "d":    float(r["distance"]),
+                    "v":    float(r["speed"]) / 3.6,
+                    "soc":  float(r["soc_pct"]) if has_soc else None,
+                    "mode": r["mode"]             if has_mode else None,
+                }
+                rows.append(row)
             except (ValueError, KeyError):
                 continue
     if len(rows) < 50:
         raise RuntimeError(f"Telemetry too short: {len(rows)} rows")
-    rows.sort(key=lambda r: r[0])
+    rows.sort(key=lambda r: r["t"])
     # Dedupe identical timestamps
     out = [rows[0]]
     for r in rows[1:]:
-        if r[0] > out[-1][0]:
+        if r["t"] > out[-1]["t"]:
             out.append(r)
-    t = np.array([r[0] for r in out])
-    d = np.array([r[1] for r in out])
-    v = np.array([r[2] for r in out])
+    t = np.array([r["t"] for r in out])
+    d = np.array([r["d"] for r in out])
+    v = np.array([r["v"] for r in out])
+    soc  = np.array([r["soc"] for r in out]) if has_soc else None
+    mode = [r["mode"] for r in out]          if has_mode else None
     lap_time = float(t[-1] - t[0])
     print(f"[telemetry] {len(t)} samples, lap_time={lap_time:.3f}s, "
-          f"dist=[{d.min():.0f},{d.max():.0f}]m, "
-          f"v=[{v.min() * 3.6:.0f},{v.max() * 3.6:.0f}] km/h")
-    return t - t[0], d - d[0], v, lap_time
+          f"v=[{v.min()*3.6:.0f},{v.max()*3.6:.0f}] km/h, "
+          f"soc={'yes' if has_soc else 'no'}, mode={'yes' if has_mode else 'no'}")
+    return t - t[0], d - d[0], v, lap_time, soc, mode
 
 
 # =============================================================
@@ -902,7 +913,7 @@ def main():
     inner_raw = np.array(data["inner"], dtype=float)
     print(f"[load] outer={len(outer_raw)} pts, inner={len(inner_raw)} pts")
 
-    ver_t, ver_d, ver_v, ver_lap = load_ver_telemetry(args.telemetry_csv)
+    ver_t, ver_d, ver_v, ver_lap, soc, mode = load_telemetry(args.telemetry_csv)
 
     # IQP corridor: heavily smoothed, INSET applied via build_centerline_and_widths.
     outer_corr = smooth_resample_loop(outer_raw, N_CORRIDOR_POINTS, CORR_SMOOTH_S)
