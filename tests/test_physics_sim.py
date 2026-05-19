@@ -1,7 +1,17 @@
+import math
+
+import numpy as np
+import pytest
+
 from sim_2026_lap import (
     extract_peak_decel_g,
     extract_apex_speed_ms,
     detect_clipping_zones,
+)
+from sim_2026_lap import (
+    MASS_KG, G, RHO, CL_CORNER_M2, CL_STRAIGHT_M2, CDA_CORNER_M2, CDA_STRAIGHT_M2,
+    MU_LAT, MU_LONG, KAPPA_CORNER_THRESH,
+    aero_mode, drag_force, downforce, v_grip_static,
 )
 
 
@@ -76,3 +86,50 @@ def test_extract_peak_decel_g_robust_to_speed_quantization():
     # True decel is 4.5 g; allow generous band, but the 8+ g quantization
     # artifact must NOT leak through.
     assert 3.5 < g < 6.0, f"quantization artifact leaked: {g:.2f} g"
+
+
+def test_aero_mode_thresholds():
+    assert aero_mode(0.0) == "STRAIGHT"
+    assert aero_mode(0.001) == "STRAIGHT"
+    assert aero_mode(0.01) == "CORNER"
+
+
+def test_drag_force_scales_with_v_squared():
+    f1 = drag_force(50.0, "STRAIGHT")
+    f2 = drag_force(100.0, "STRAIGHT")
+    # Drag proportional to v^2 -> 4x when v doubles
+    assert f2 / f1 == pytest.approx(4.0, rel=1e-3)
+
+
+def test_drag_higher_in_corner_mode():
+    # Corner Mode has higher CdA (wing closed) than Straight Mode
+    assert drag_force(80.0, "CORNER") > drag_force(80.0, "STRAIGHT")
+
+
+def test_downforce_corner_higher_than_straight():
+    assert downforce(80.0, "CORNER") > downforce(80.0, "STRAIGHT")
+
+
+def test_v_grip_no_downforce_baseline():
+    # For a turn of radius R with NO downforce, v^2 = mu_lat * g * R.
+    R = 30.0
+    v = v_grip_static(1.0 / R)
+    expected_no_df = math.sqrt(MU_LAT * G * R)
+    # With downforce engaged, v_grip should be HIGHER than the no-DF baseline
+    assert v > expected_no_df
+
+
+def test_v_grip_straight_is_unbounded():
+    # A genuine straight (kappa = 0) returns a large fallback, not NaN/inf
+    v = v_grip_static(0.0)
+    assert v > 200.0  # m/s -- i.e. effectively no corner cap
+
+
+def test_v_grip_hairpin_realistic():
+    # Canada hairpin (T10) driven-line radius ~ 25 m -> kappa ~ 0.04 1/m.
+    # (The 15 m geometric kerb radius is far tighter than the line a car
+    # actually takes through the apex.) Expected 2026 hairpin speed
+    # ~ 70-95 km/h = ~20-26 m/s, consistent with the v_apex calibration
+    # (22.5 m/s) and the spec's [70, 105] km/h hairpin window.
+    v = v_grip_static(1.0 / 25.0)
+    assert 18.0 < v < 30.0, f"hairpin v_grip = {v:.1f} m/s, outside realistic range"

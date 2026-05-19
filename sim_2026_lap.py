@@ -576,6 +576,74 @@ def calibrate_from_telemetry(canada_2025_csv, china_2026_csv, out_path):
     return payload
 
 
+# ════════════════════════════════════════════════════════════════════════
+# 2026 PHYSICS BLOCK
+# ════════════════════════════════════════════════════════════════════════
+# Every magnitude below is justified in the spec at
+# docs/superpowers/specs/2026-05-19-canada-2026-revamp-design.md §3 / §6.
+
+# Vehicle
+MASS_KG               = 768.0          # FIA 2026 min
+G                     = 9.81
+RHO                   = 1.225
+
+# Power
+P_ICE_MAX_W           = 400_000        # 400 kW combustion
+P_MGU_DEPLOY_MAX_W    = 350_000        # MGU-K in key-accel zone
+P_MGU_NORMAL_CAP_W    = 250_000        # MGU-K elsewhere (pre-Miami 2026)
+P_MGU_REGEN_MAX_W     = 350_000        # MGU-K regen ceiling
+E_DEPLOY_BUDGET_J     = 9_000_000      # 9 MJ/lap deploy budget
+E_BATTERY_CAP_J       = 4_000_000      # 4 MJ usable store
+
+# Aero (effective Cd·A and Cl·A) — derived from -40..-55% drag, -30% DF
+CDA_STRAIGHT_M2       = 0.55
+CDA_CORNER_M2         = 0.90
+CL_STRAIGHT_M2        = 1.40
+CL_CORNER_M2          = 2.80
+
+# Tire grip
+MU_LONG               = 1.60
+MU_LAT                = 1.70
+
+# Mode-switching
+KAPPA_CORNER_THRESH   = 0.005          # |κ| > this → Corner Mode
+SOC_SUPERCLIP_THRESH  = 0.30
+KEY_ACCEL_WINDOW_S    = 5.0
+
+# Initial battery and safety caps
+SOC_INIT              = 1.0
+V_FLOOR_MS            = 5.0            # never let v drop below this in numerics
+
+
+def aero_mode(kappa):
+    return "CORNER" if abs(kappa) > KAPPA_CORNER_THRESH else "STRAIGHT"
+
+
+def drag_force(v, mode):
+    cda = CDA_CORNER_M2 if mode == "CORNER" else CDA_STRAIGHT_M2
+    return 0.5 * RHO * cda * v * v
+
+
+def downforce(v, mode):
+    cl = CL_CORNER_M2 if mode == "CORNER" else CL_STRAIGHT_M2
+    return 0.5 * RHO * cl * v * v
+
+
+def v_grip_static(kappa):
+    """Max steady-state cornering speed at a station with curvature κ, using
+    the friction circle with active downforce in Corner Mode:
+        μ_lat (m·g + 0.5·ρ·Cl·v²) = m·v²·|κ|
+        v² = μ_lat g  /  (|κ|  −  μ_lat · 0.5·ρ·Cl / m)
+    If denominator ≤ 0 (long radius), v is effectively unbounded → cap large."""
+    k = abs(kappa)
+    if k < 1e-6:
+        return 300.0   # effectively no corner cap; powertrain decides
+    denom = k - MU_LAT * 0.5 * RHO * CL_CORNER_M2 / MASS_KG
+    if denom <= 0.0:
+        return 300.0
+    return math.sqrt(MU_LAT * G / denom)
+
+
 def main():
     # Status lines contain Unicode (α, ×, κ); force UTF-8 stdout so they
     # don't crash on Windows' default cp1252 console codec.
