@@ -5,7 +5,11 @@ Parse an Inkscape SVG centerline of a race track and build an outline JSON
 
 Spec: docs/superpowers/specs/2026-05-19-canada-2026-revamp-design.md
 """
+import argparse
+import json
+import os
 import re
+import sys
 
 import numpy as np
 from scipy.interpolate import splprep, splev
@@ -305,3 +309,74 @@ def find_start_finish_index(kappa, low_thresh=SF_LINE_KAPPA_THRESH):
             i += 1
     mid = (best_start + best_len // 2) % n
     return mid
+
+
+# === Main entry point ===================================================
+
+def build_outline_from_svg(svg_path):
+    """End-to-end: SVG file path → (outer, inner) np arrays in metres."""
+    with open(svg_path, encoding="utf-8") as f:
+        text = f.read()
+    m = re.search(r'(?:^|\s)d\s*=\s*"([^"]+)"', text)
+    if m is None:
+        print(f"[svg_to_outline] no <path d=\"\"> found in {svg_path}", file=sys.stderr)
+        sys.exit(2)
+
+    cmds = parse_svg_path_d(m.group(1))
+    raw_poly = np.asarray(commands_to_polyline(cmds, BEZIER_SAMPLES_PER_SEG))
+    print(f"[svg_to_outline] raw polyline: {len(raw_poly)} points")
+
+    raw_poly = y_flip(raw_poly)
+    scaled, scale = scale_to_length(raw_poly, TRACK_LENGTH_M)
+    print(f"[svg_to_outline] scale factor: {scale:.4f} m/SVG-unit")
+    if not (SCALE_SANITY_MIN <= scale <= SCALE_SANITY_MAX):
+        print(f"[svg_to_outline] scale {scale} outside [{SCALE_SANITY_MIN},"
+              f" {SCALE_SANITY_MAX}] — refusing to proceed", file=sys.stderr)
+        sys.exit(3)
+
+    scaled = recentre(scaled)
+    centerline = smooth_resample_loop(scaled, N_OUTPUT_POINTS, smooth_s=30.0)
+
+    # Per-station widths: constant base, narrow at hairpin (highest |κ| peak)
+    kappa = compute_curvature(centerline)
+    arc_per_step = TRACK_LENGTH_M / N_OUTPUT_POINTS
+    widths = np.full(N_OUTPUT_POINTS, ROAD_WIDTH_M)
+    apply_hairpin_narrowing(widths, kappa, arc_per_step,
+                            HAIRPIN_HALF_RANGE_M, HAIRPIN_NARROW_M)
+
+    # Variable-width edges
+    nrm = compute_left_normals(centerline)
+    half = widths[:, None] / 2.0
+    inner = centerline + half * nrm
+    outer = centerline - half * nrm
+
+    # Roll both so index 0 is the start/finish line
+    sf_idx = find_start_finish_index(kappa)
+    print(f"[svg_to_outline] S/F at index {sf_idx} of {N_OUTPUT_POINTS} "
+          f"(arc fraction {sf_idx / N_OUTPUT_POINTS * 100:.1f}%)")
+    outer = np.roll(outer, -sf_idx, axis=0)
+    inner = np.roll(inner, -sf_idx, axis=0)
+
+    return outer, inner
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--svg", required=True, help="Input SVG path (Inkscape centerline)")
+    ap.add_argument("--out", required=True, help="Output outline JSON path")
+    args = ap.parse_args()
+
+    outer, inner = build_outline_from_svg(args.svg)
+
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+    payload = {
+        "outer": outer.tolist(),
+        "inner": inner.tolist(),
+    }
+    with open(args.out, "w", encoding="utf-8") as f:
+        json.dump(payload, f)
+    print(f"[svg_to_outline] wrote {args.out}")
+
+
+if __name__ == "__main__":
+    main()
