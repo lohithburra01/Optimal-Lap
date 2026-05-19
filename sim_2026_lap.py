@@ -64,8 +64,12 @@ DECEL_WINDOW_S = 0.40   # peak braking decel / accel power are measured over a
                         # also de-contaminates P_over_m_obs of a leading-edge
                         # quantization step (1266 -> 1038 W/kg).
 
-# Override WARM_* defaults from calibration JSON if present
-_CALIB_PATH = "F1_Pipeline_Assets/calibration/vehicle_calibration.json"
+# Override WARM_* defaults from calibration JSON if present.
+# Resolve relative to THIS file, not the CWD — otherwise importing sim_2026_lap
+# from any other directory silently skips the override and runs on stale defaults.
+_CALIB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "F1_Pipeline_Assets", "calibration",
+                           "vehicle_calibration.json")
 if os.path.exists(_CALIB_PATH):
     with open(_CALIB_PATH, encoding="utf-8") as _f:
         _calib = json.load(_f)
@@ -81,6 +85,8 @@ if os.path.exists(_CALIB_PATH):
         kappa_hairpin = 1.0 / 15.0   # ~15 m radius for Canada T10
         WARM_A_LAT_MAX = v_apex * v_apex * kappa_hairpin
     print(f"[calibrate] overrides applied from {_CALIB_PATH}")
+else:
+    print(f"[calibrate] no calibration JSON at {_CALIB_PATH} — using WARM_* defaults")
 
 
 def kappa_ds_menger(pts):
