@@ -56,11 +56,13 @@ WARM_V_CAP           = 110.0          # m/s safety cap
 WARM_RHO             = 1.225
 
 # ── Telemetry-calibration constants ─────────────────────────────────────
-DECEL_WINDOW_S = 0.30   # peak braking decel / accel power are measured over a
-                        # ~0.3 s window, not adjacent samples: FastF1's
+DECEL_WINDOW_S = 0.40   # peak braking decel / accel power are measured over a
+                        # ~0.4 s window, not adjacent samples: FastF1's
                         # interpolated speed channel quantizes into a
                         # plateau-then-step pattern that point-wise dv/dt
-                        # misreads as unphysical (8+ g) spikes.
+                        # misreads as unphysical (8+ g) spikes. 0.40 s (vs 0.30)
+                        # also de-contaminates P_over_m_obs of a leading-edge
+                        # quantization step (1266 -> 1038 W/kg).
 
 # Override WARM_* defaults from calibration JSON if present
 _CALIB_PATH = "F1_Pipeline_Assets/calibration/vehicle_calibration.json"
