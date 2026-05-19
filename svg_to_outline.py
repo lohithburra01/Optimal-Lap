@@ -97,3 +97,50 @@ def parse_svg_path_d(d_str):
         last_cmd = cmd
 
     return out
+
+
+# === Bezier sampling & polyline expansion ==============================
+
+def sample_cubic_bezier(p0, p1, p2, p3, n):
+    """Sample n points (inclusive of endpoints) along a cubic Bezier curve."""
+    out = []
+    for i in range(n):
+        t = i / (n - 1) if n > 1 else 0.0
+        u = 1.0 - t
+        b0 = u * u * u
+        b1 = 3.0 * u * u * t
+        b2 = 3.0 * u * t * t
+        b3 = t * t * t
+        x = b0 * p0[0] + b1 * p1[0] + b2 * p2[0] + b3 * p3[0]
+        y = b0 * p0[1] + b1 * p1[1] + b2 * p2[1] + b3 * p3[1]
+        out.append((x, y))
+    return out
+
+
+def commands_to_polyline(cmds, n_per_seg=BEZIER_SAMPLES_PER_SEG):
+    """Expand a parsed command list into a dense polyline. Skips the start of
+    each segment after the first to avoid duplicate points at joins.
+    Supports M, L, C, Z."""
+    pts = []
+    cur = None
+    subpath_start = None
+    for kind, coords in cmds:
+        if kind == "M":
+            cur = coords[0]
+            subpath_start = cur
+            pts.append(cur)
+        elif kind == "L":
+            for tgt in coords:
+                pts.append(tgt)
+                cur = tgt
+        elif kind == "C":
+            # SVG cubic: control1, control2, end
+            c1, c2, end = coords
+            sample = sample_cubic_bezier(cur, c1, c2, end, n_per_seg)
+            pts.extend(sample[1:])   # drop the duplicate start
+            cur = end
+        elif kind == "Z":
+            if subpath_start is not None and cur != subpath_start:
+                pts.append(subpath_start)
+                cur = subpath_start
+    return pts

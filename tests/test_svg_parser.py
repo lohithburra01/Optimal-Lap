@@ -1,5 +1,6 @@
+import math
 import pytest
-from svg_to_outline import parse_svg_path_d
+from svg_to_outline import parse_svg_path_d, sample_cubic_bezier, commands_to_polyline
 
 
 def test_simple_move_and_close():
@@ -54,3 +55,45 @@ def test_canada_circuit_path_parses():
 def test_number_after_z_raises():
     with pytest.raises(ValueError, match="after Z"):
         parse_svg_path_d("M 0,0 Z 20,20")
+
+
+def test_bezier_endpoints():
+    p0 = (0.0, 0.0); p1 = (1.0, 2.0); p2 = (3.0, 2.0); p3 = (4.0, 0.0)
+    pts = sample_cubic_bezier(p0, p1, p2, p3, n=10)
+    # First sample should be p0; last should be p3
+    assert pts[0] == pytest.approx(p0)
+    assert pts[-1] == pytest.approx(p3)
+    assert len(pts) == 10
+
+
+def test_bezier_midpoint_known():
+    # Symmetric control hull -> t=0.5 lies on the perpendicular bisector of p0p3
+    p0 = (0.0, 0.0); p1 = (0.0, 1.0); p2 = (1.0, 1.0); p3 = (1.0, 0.0)
+    pts = sample_cubic_bezier(p0, p1, p2, p3, n=11)   # odd n -> t=0.5 hit exactly
+    mid = pts[5]
+    assert mid[0] == pytest.approx(0.5, abs=1e-9)
+    assert mid[1] == pytest.approx(0.75, abs=1e-9)   # B(0.5)=0.125*0 + 0.375*1 + 0.375*1 + 0.125*0
+
+
+def test_commands_to_polyline_simple():
+    # Single cubic segment: M (0,0)  C (1,0)(2,0)(3,0)  Z
+    cmds = [("M", [(0.0, 0.0)]), ("C", [(1.0, 0.0), (2.0, 0.0), (3.0, 0.0)]), ("Z", [])]
+    poly = commands_to_polyline(cmds, n_per_seg=10)
+    # Start at (0,0); end at (3,0) before Z snaps back; closure point appended
+    assert poly[0] == pytest.approx((0.0, 0.0))
+    assert poly[-1] == pytest.approx((0.0, 0.0))   # Z closes back to subpath start
+
+
+def test_canada_polyline_has_thousands_of_points():
+    import re
+    with open("CANADA CIRCUIT.svg", encoding="utf-8") as f:
+        text = f.read()
+    d = re.search(r'(?:^|\s)d\s*=\s*"([^"]+)"', text).group(1)
+    cmds = parse_svg_path_d(d)
+    poly = commands_to_polyline(cmds, n_per_seg=40)
+    # Canada SVG has >=20 cubics x 40 samples ~ 800+ points
+    assert len(poly) >= 800
+    # Bounding box should match SVG width/height ballpark (1494.5 x 729.5)
+    xs = [p[0] for p in poly]; ys = [p[1] for p in poly]
+    assert max(xs) - min(xs) > 1000
+    assert max(ys) - min(ys) > 350
