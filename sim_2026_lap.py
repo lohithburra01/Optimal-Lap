@@ -821,6 +821,74 @@ def forward_pass_energy_aware(v_grip, v_brake, kappa, arc, track_length_m,
     return v, soc_arr_final, mode_arr, p_kw_arr, t_arr
 
 
+def simulate_lap(raceline, arc, kappa, track_length_m, max_iters=8, tol_v=1.0):
+    """Forward-backward closure loop until v(end) ≈ v(start)."""
+    n = len(raceline)
+    v_grip = np.array([v_grip_static(k) for k in kappa])
+
+    v0 = 60.0   # initial guess, refined by closure
+    for it in range(max_iters):
+        v_brake = compute_v_brake_backward(v_grip, kappa, arc, track_length_m)
+        v, soc, mode, p_kw, t_arr = forward_pass_energy_aware(
+            v_grip, v_brake, kappa, arc, track_length_m, v0=v0)
+        v_end = v[-1]
+        v_start = v[0]
+        dv_closure = abs(v_end - v_start)
+        print(f"  closure iter {it}: v0={v_start:.1f} vN={v_end:.1f} "
+              f"d={dv_closure:.2f} T_lap={t_arr[-1]:.3f}s")
+        if dv_closure < tol_v and it >= 1:
+            print(f"  closure converged at iter {it}")
+            break
+        v0 = 0.5 * (v_start + v_end)   # damped midpoint update
+    return v, soc, mode, p_kw, t_arr
+
+
+def write_csv(out_path, v, soc, mode, p_kw, t_arr, arc, track_length_m, fps=30):
+    """Resample uniformly in time at video fps and write the CSV."""
+    T_lap = float(t_arr[-1])
+    n_out = max(60, int(math.ceil(T_lap * fps)))
+    t_out = np.linspace(0.0, T_lap, n_out, endpoint=False)
+
+    # Make t_arr strictly monotonic (forward pass should already be)
+    t_mono = np.maximum.accumulate(t_arr)
+
+    v_out   = np.interp(t_out, t_mono, v)
+    soc_out = np.interp(t_out, t_mono, soc)
+    p_out   = np.interp(t_out, t_mono, p_kw)
+    d_out   = np.interp(t_out, t_mono, arc)
+    # categorical mode: nearest neighbour
+    idx_for_t = np.searchsorted(t_mono, t_out, side="right") - 1
+    idx_for_t = np.clip(idx_for_t, 0, len(mode) - 1)
+    mode_out = [mode[i] for i in idx_for_t]
+
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=[
+            "frame", "time_s", "distance", "speed",
+            "throttle", "brake", "gear", "rpm",
+            "soc_pct", "mode", "power_kw",
+        ])
+        w.writeheader()
+        for i in range(n_out):
+            v_kmh = v_out[i] * 3.6
+            throttle = 100.0 if p_out[i] > 0.0 else 0.0
+            brake    = 100.0 if mode_out[i] == "REGEN" else 0.0
+            w.writerow({
+                "frame":      i,
+                "time_s":     round(float(t_out[i]), 4),
+                "distance":   round(float(d_out[i]), 3),
+                "speed":      round(float(v_kmh), 3),
+                "throttle":   round(throttle, 2),
+                "brake":      round(brake, 2),
+                "gear":       0,
+                "rpm":        0,
+                "soc_pct":    round(float(soc_out[i] * 100.0), 2),
+                "mode":       mode_out[i],
+                "power_kw":   round(float(p_out[i]), 2),
+            })
+    print(f"[sim] wrote {n_out} rows -> {out_path}")
+
+
 def main():
     # Status lines contain Unicode (α, ×, κ); force UTF-8 stdout so they
     # don't crash on Windows' default cp1252 console codec.
@@ -855,7 +923,8 @@ def main():
         }, f)
     print(f"[sim] wrote raceline -> {args.raceline_out}")
 
-    print("[sim] (physics CSV not yet implemented — Phase 3 of plan)")
+    v, soc, mode, p_kw, t_arr = simulate_lap(raceline, arc, kappa, total_len)
+    write_csv(args.csv_out, v, soc, mode, p_kw, t_arr, arc, total_len, fps=30)
 
 
 if __name__ == "__main__":
