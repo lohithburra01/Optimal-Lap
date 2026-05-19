@@ -644,6 +644,34 @@ def v_grip_static(kappa):
     return math.sqrt(MU_LAT * G / denom)
 
 
+def compute_v_brake_backward(v_grip, kappa, arc, track_length_m, n_iters=3):
+    """Backward pass: at each station, the speed must be low enough that the
+    car can brake to v_grip(s+ds) by the time it reaches the next station.
+    Friction-circle braking with active downforce."""
+    n = len(v_grip)
+    ds = np.diff(np.concatenate([arc, [track_length_m]]))   # closed loop
+    v = v_grip.copy()
+    for _ in range(n_iters):
+        for i in range(n - 1, -1, -1):
+            ip = (i + 1) % n
+            # Lateral grip required at station ip
+            a_lat_used = abs(kappa[ip]) * v[ip] * v[ip]
+            mode_ip = aero_mode(kappa[ip])
+            a_lat_max = MU_LAT * (G + 0.5 * RHO *
+                                  (CL_CORNER_M2 if mode_ip == "CORNER" else CL_STRAIGHT_M2)
+                                  / MASS_KG * v[ip] * v[ip])
+            if a_lat_max <= 0.0:
+                continue
+            ratio_sq = min(1.0, (a_lat_used / a_lat_max) ** 2)
+            a_long_grip = MU_LONG * (G + downforce(v[ip], mode_ip) / MASS_KG) * math.sqrt(1.0 - ratio_sq)
+            drag_a = drag_force(v[ip], mode_ip) / MASS_KG
+            a_decel = a_long_grip + drag_a   # both decelerate (brake + drag)
+            v_pred = math.sqrt(max(0.0, v[ip] * v[ip] + 2.0 * a_decel * ds[i]))
+            if v_pred < v[i]:
+                v[i] = v_pred
+    return v
+
+
 def main():
     # Status lines contain Unicode (α, ×, κ); force UTF-8 stdout so they
     # don't crash on Windows' default cp1252 console codec.

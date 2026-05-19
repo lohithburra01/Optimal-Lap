@@ -13,6 +13,7 @@ from sim_2026_lap import (
     MU_LAT, MU_LONG, KAPPA_CORNER_THRESH,
     aero_mode, drag_force, downforce, v_grip_static,
 )
+from sim_2026_lap import compute_v_brake_backward
 
 
 def _synth_lap(brake_decel_g=4.5, v_apex_ms=20.0, n=400):
@@ -133,3 +134,19 @@ def test_v_grip_hairpin_realistic():
     # (22.5 m/s) and the spec's [70, 105] km/h hairpin window.
     v = v_grip_static(1.0 / 25.0)
     assert 18.0 < v < 30.0, f"hairpin v_grip = {v:.1f} m/s, outside realistic range"
+
+
+def test_brake_pass_respects_apex_speed():
+    # 100 stations, all straight (kappa=0), with one slow corner at index 50
+    n = 100
+    kappa = np.zeros(n)
+    arc = np.linspace(0, 1000.0, n, endpoint=False)   # 10 m spacing, 1000 m total
+    v_grip = np.full(n, 100.0)
+    v_grip[50] = 30.0    # forced slow corner
+    v_brake = compute_v_brake_backward(v_grip, kappa, arc, track_length_m=1000.0)
+    # Stations just before index 50 should be braking-limited (lower than 100)
+    assert v_brake[48] < 100.0
+    assert v_brake[49] < v_brake[48]   # decreasing toward the apex
+    assert v_brake[50] == pytest.approx(30.0, abs=0.5)
+    # Far from the corner the brake constraint shouldn't apply
+    assert v_brake[10] == pytest.approx(100.0, abs=0.5)
