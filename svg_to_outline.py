@@ -7,6 +7,9 @@ Spec: docs/superpowers/specs/2026-05-19-canada-2026-revamp-design.md
 """
 import re
 
+import numpy as np
+from scipy.interpolate import splprep, splev
+
 # === Constants (see spec §5) ============================================
 TRACK_LENGTH_M          = 4361.0
 ROAD_WIDTH_M            = 13.0
@@ -144,3 +147,53 @@ def commands_to_polyline(cmds, n_per_seg=BEZIER_SAMPLES_PER_SEG):
                 pts.append(subpath_start)
                 cur = subpath_start
     return pts
+
+
+# === Geometry helpers (flip, scale, recentre, resample) ================
+
+def y_flip(pts):
+    """Negate the y coordinate so SVG-down becomes math-up."""
+    pts = np.asarray(pts, dtype=float).copy()
+    pts[:, 1] = -pts[:, 1]
+    return pts
+
+
+def scale_to_length(pts, target_arc_m):
+    """Uniform-scale a closed polyline so its perimeter == target_arc_m.
+    Returns (scaled_pts, scale_factor)."""
+    pts = np.asarray(pts, dtype=float)
+    seg = np.linalg.norm(np.diff(np.vstack([pts, pts[0]]), axis=0), axis=1)
+    raw_arc = float(seg.sum())
+    if raw_arc <= 0.0:
+        raise ValueError("scale_to_length: zero-length polyline")
+    scale = target_arc_m / raw_arc
+    return pts * scale, scale
+
+
+def recentre(pts):
+    """Subtract the centroid so the loop is centred on origin."""
+    pts = np.asarray(pts, dtype=float)
+    return pts - pts.mean(axis=0, keepdims=True)
+
+
+def smooth_resample_loop(poly, n_out, smooth_s):
+    """Periodic cubic-spline smooth + uniform arc-length resample.
+    Same pattern as raceline_video.py:113 (kept consistent for readability)."""
+    poly = np.asarray(poly, dtype=float)
+    if not np.allclose(poly[0], poly[-1]):
+        poly_closed = np.vstack([poly, poly[0]])
+    else:
+        poly_closed = poly
+    seg = np.linalg.norm(np.diff(poly_closed, axis=0), axis=1)
+    keep = np.concatenate([[True], seg > 1e-6])
+    poly_closed = poly_closed[keep]
+    if not np.allclose(poly_closed[0], poly_closed[-1]):
+        poly_closed = np.vstack([poly_closed, poly_closed[0]])
+    seg = np.linalg.norm(np.diff(poly_closed, axis=0), axis=1)
+    cum = np.concatenate([[0.0], np.cumsum(seg)])
+    u_norm = cum / cum[-1]
+    tck, _ = splprep([poly_closed[:, 0], poly_closed[:, 1]],
+                     u=u_norm, s=smooth_s, per=True, k=3)
+    u_new = np.linspace(0.0, 1.0, n_out, endpoint=False)
+    rx, ry = splev(u_new, tck)
+    return np.column_stack([rx, ry])

@@ -1,4 +1,3 @@
-import math
 import pytest
 from svg_to_outline import parse_svg_path_d, sample_cubic_bezier, commands_to_polyline
 
