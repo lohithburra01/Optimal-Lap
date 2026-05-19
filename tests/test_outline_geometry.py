@@ -44,6 +44,8 @@ def test_recentre_zero_mean():
 
 def test_smooth_resample_loop_count_and_periodicity():
     poly = _circle_polyline(1.0, n=400)
+    # smooth_s scales with polyline-size² (splprep convention). Production uses
+    # s≈10-30 on a ~4361 m track; equivalent on a unit-radius circle is ~0.01.
     out = smooth_resample_loop(poly, n_out=256, smooth_s=0.01)
     assert out.shape == (256, 2)
     # First and last should be nearly equal under the periodic spline

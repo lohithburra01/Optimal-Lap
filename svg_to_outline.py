@@ -178,6 +178,12 @@ def recentre(pts):
 
 def smooth_resample_loop(poly, n_out, smooth_s):
     """Periodic cubic-spline smooth + uniform arc-length resample.
+
+    `smooth_s` is `splprep`'s sum-of-squared-residuals bound, in the SAME
+    UNITS² as `poly`. It scales with the polyline's size: production uses
+    s≈10–30 on a ~4361 m track (raceline_video.py:54-55), which corresponds
+    to s≈0.01–0.05 on a unit-radius circle.
+
     Same pattern as raceline_video.py:113 (kept consistent for readability)."""
     poly = np.asarray(poly, dtype=float)
     if not np.allclose(poly[0], poly[-1]):
