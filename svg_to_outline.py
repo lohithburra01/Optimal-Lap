@@ -208,7 +208,14 @@ def smooth_resample_loop(poly, n_out, smooth_s):
 # === Edge generation (outer/inner from centerline) =====================
 
 def compute_left_normals(pts):
-    """3-point tangent → left-normal at each station of a closed polyline."""
+    """3-point tangent → left-normal at each station of a closed polyline.
+
+    Expects CCW (math-convention) input. For CW input the returned normals
+    still point left of the tangent — they just point outward from the loop
+    instead of inward. The ±3 stencil (vs ±1 central difference) is
+    deliberate noise rejection: a 2000-station resampled track has small
+    per-station jitter from the spline that a 1-step difference amplifies.
+    """
     pts = np.asarray(pts, dtype=float)
     n = len(pts)
     tang = np.zeros_like(pts)
@@ -222,9 +229,79 @@ def compute_left_normals(pts):
 
 def generate_edges_constant_width(centerline, width_m):
     """Offset the centerline by ±W/2 along the left-normal to get outer/inner.
-    For a CCW loop, left-normal points inward → inner = +W/2·n, outer = -W/2·n."""
+
+    PRECONDITION: `centerline` must be CCW in math coordinates. For a CCW
+    loop, the left-normal points INWARD → inner = centerline + W/2·n_left,
+    outer = centerline - W/2·n_left. CW input produces inner/outer SWAPPED
+    (no error). Task 7's main() is responsible for enforcing orientation
+    (signed-area check) before calling this helper.
+    """
     nrm = compute_left_normals(centerline)
     half = width_m / 2.0
     inner = centerline + half * nrm
     outer = centerline - half * nrm
     return outer, inner
+
+
+# === Curvature, hairpin narrowing, start/finish detection ==============
+
+def compute_curvature(pts):
+    """Discrete signed curvature κ at each station of a closed polyline."""
+    pts = np.asarray(pts, dtype=float)
+    n = len(pts)
+    kappa = np.zeros(n)
+    for i in range(n):
+        a = pts[(i - 1) % n]
+        b = pts[i]
+        c = pts[(i + 1) % n]
+        ab = b - a; bc = c - b
+        cross = ab[0] * bc[1] - ab[1] * bc[0]
+        denom = np.linalg.norm(ab) * np.linalg.norm(bc) * np.linalg.norm(c - a)
+        kappa[i] = 0.0 if denom < 1e-9 else 2.0 * cross / denom
+    return kappa
+
+
+def apply_hairpin_narrowing(widths, kappa, arc_per_step, half_range_m,
+                             narrowed_width):
+    """In-place: narrow `widths` to `narrowed_width` within ±half_range_m
+    (in arc length) of the global |κ| peak. Linear taper at the edges."""
+    n = len(widths)
+    peak = int(np.argmax(np.abs(kappa)))
+    half_range_steps = int(half_range_m / arc_per_step)
+    if half_range_steps == 0:
+        widths[peak] = narrowed_width
+        return
+    for offset in range(-half_range_steps, half_range_steps + 1):
+        idx = (peak + offset) % n
+        # Linear taper: 0 at edge, 1 at peak
+        t = 1.0 - abs(offset) / float(half_range_steps)
+        w_target = widths[idx] * (1.0 - t) + narrowed_width * t
+        if w_target < widths[idx]:    # only narrow, never widen
+            widths[idx] = w_target
+
+
+def find_start_finish_index(kappa, low_thresh=SF_LINE_KAPPA_THRESH):
+    """Return the index that is the midpoint of the longest contiguous run
+    of |κ| < low_thresh on a closed loop. Used to place s=0 at the longest
+    straight (proxy for the start/finish line)."""
+    n = len(kappa)
+    is_straight = np.abs(kappa) < low_thresh
+    if not is_straight.any():
+        return 0
+    # Walk the loop twice to find the longest run accounting for wrap-around
+    doubled = np.concatenate([is_straight, is_straight])
+    best_len, best_start = 0, 0
+    i = 0
+    while i < 2 * n:
+        if doubled[i]:
+            j = i
+            while j < 2 * n and doubled[j]:
+                j += 1
+            run_len = j - i
+            if run_len > best_len and run_len <= n:
+                best_len, best_start = run_len, i
+            i = j
+        else:
+            i += 1
+    mid = (best_start + best_len // 2) % n
+    return mid

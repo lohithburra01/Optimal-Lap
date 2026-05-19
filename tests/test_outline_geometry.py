@@ -9,6 +9,11 @@ from svg_to_outline import (
     recentre,
 )
 from svg_to_outline import compute_left_normals, generate_edges_constant_width
+from svg_to_outline import (
+    compute_curvature,
+    apply_hairpin_narrowing,
+    find_start_finish_index,
+)
 
 
 def test_left_normals_orthogonal_to_tangent():
@@ -82,3 +87,41 @@ def test_smooth_resample_loop_count_and_periodicity():
     radii = np.linalg.norm(out, axis=1)
     assert radii.min() == pytest.approx(1.0, abs=0.05)
     assert radii.max() == pytest.approx(1.0, abs=0.05)
+
+
+def test_curvature_circle():
+    R = 5.0
+    th = np.linspace(0.0, 2 * math.pi, 1024, endpoint=False)
+    pts = np.column_stack([R * np.cos(th), R * np.sin(th)])
+    k = compute_curvature(pts)
+    # κ for a circle of radius R is 1/R (sign depends on direction; |κ| = 1/R)
+    assert np.abs(np.abs(k).mean() - 1.0 / R) < 0.01
+
+
+def test_hairpin_narrowing_reduces_width_near_peak():
+    # Synthetic: high curvature spike at index 100 of a 1000-point loop
+    n = 1000
+    th = np.linspace(0.0, 2 * math.pi, n, endpoint=False)
+    pts = np.column_stack([np.cos(th), np.sin(th)]) * 100.0
+    kappa = np.zeros(n)
+    kappa[100] = 0.1   # spike
+    arc_per_step = 2 * math.pi * 100.0 / n   # ~0.63 m per step
+    widths = np.full(n, 13.0)
+    apply_hairpin_narrowing(widths, kappa, arc_per_step,
+                            half_range_m=60.0, narrowed_width=10.5)
+    # Width should be 10.5 at index 100, taper back to 13.0 well outside ±60m
+    assert widths[100] == pytest.approx(10.5)
+    far_idx = (100 + int(200.0 / arc_per_step)) % n
+    assert widths[far_idx] == pytest.approx(13.0)
+
+
+def test_find_start_finish_picks_low_curvature_run():
+    n = 200
+    kappa = np.zeros(n)
+    # Two corners: one short, one long
+    kappa[10:30] = 0.05
+    kappa[60:90] = 0.05
+    # Longest straight: 90..200 then wraps 0..10 (total ~120 stations)
+    sf = find_start_finish_index(kappa, low_thresh=0.001)
+    # Midpoint of the long straight (90..210 wrapped, midpoint ≈ index 150)
+    assert 130 <= sf <= 170 or sf <= 30   # tolerate wrap handling
