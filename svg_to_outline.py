@@ -62,6 +62,8 @@ def parse_svg_path_d(d_str):
             # SVG rule: after an M/m, the implicit repeat is L/l, not M/m.
             if last_cmd is None:
                 raise ValueError(f"Number {tok!r} with no preceding command")
+            if last_cmd in ("Z", "z"):
+                raise ValueError(f"Number {tok!r} after Z is invalid SVG (Z must be followed by M)")
             if last_cmd == "M":
                 cmd = "L"
             elif last_cmd == "m":

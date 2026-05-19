@@ -49,3 +49,8 @@ def test_canada_circuit_path_parses():
     assert cmd_kinds[-1] == "Z"
     # Must produce a non-trivial number of cubic segments (Canada path has many)
     assert sum(1 for k in cmd_kinds if k == "C") >= 20
+
+
+def test_number_after_z_raises():
+    with pytest.raises(ValueError, match="after Z"):
+        parse_svg_path_d("M 0,0 Z 20,20")
