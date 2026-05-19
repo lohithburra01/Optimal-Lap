@@ -672,6 +672,155 @@ def compute_v_brake_backward(v_grip, kappa, arc, track_length_m, n_iters=3):
     return v
 
 
+def _pick_mode(soc, lap_deploy_j, dv_target, t_since_corner_exit,
+               kappa_here, on_straight_with_room):
+    """Return one of DEPLOY / NORMAL / CLIPPING / SUPERCLIP / REGEN."""
+    if dv_target < 0.0:
+        return "REGEN"
+    budget_left = E_DEPLOY_BUDGET_J - lap_deploy_j
+    can_deploy = (soc > 1e-4) and (budget_left > 1e3)
+    if not can_deploy:
+        return "CLIPPING"
+    if soc < SOC_SUPERCLIP_THRESH and on_straight_with_room:
+        return "SUPERCLIP"
+    if t_since_corner_exit < KEY_ACCEL_WINDOW_S:
+        return "DEPLOY"
+    return "NORMAL"
+
+
+def _power_for_mode(mode, v):
+    """Total propulsion power (W) by mode. Positive = pushing; negative = harvesting."""
+    if mode == "DEPLOY":
+        return P_ICE_MAX_W + P_MGU_DEPLOY_MAX_W
+    if mode == "NORMAL":
+        return P_ICE_MAX_W + P_MGU_NORMAL_CAP_W
+    if mode == "CLIPPING":
+        return P_ICE_MAX_W
+    if mode == "SUPERCLIP":
+        return P_ICE_MAX_W - P_MGU_NORMAL_CAP_W   # ICE pushes, MGU harvests
+    if mode == "REGEN":
+        return 0.0   # propulsion zero; regen handled separately
+    raise ValueError(mode)
+
+
+def _battery_delta_for_mode(mode, dt):
+    """Joules added (+) or removed (−) from battery this step."""
+    if mode == "DEPLOY":
+        return -P_MGU_DEPLOY_MAX_W * dt
+    if mode == "NORMAL":
+        return -P_MGU_NORMAL_CAP_W * dt
+    if mode == "SUPERCLIP":
+        return +P_MGU_NORMAL_CAP_W * dt
+    if mode == "REGEN":
+        return +P_MGU_REGEN_MAX_W * dt
+    return 0.0
+
+
+def _deploy_energy_for_mode(mode, dt):
+    """Counts toward the per-lap deploy budget."""
+    if mode == "DEPLOY":
+        return P_MGU_DEPLOY_MAX_W * dt
+    if mode == "NORMAL":
+        return P_MGU_NORMAL_CAP_W * dt
+    return 0.0
+
+
+def _straight_room_ahead(v_brake, i, n):
+    """True iff there's ≥ 3 s of straight ahead before the next braking event.
+    A 'braking event' is a station where v_brake drops below the predecessor's
+    v_brake by more than 5 m/s. Heuristic but cheap."""
+    look_steps = min(200, n // 4)
+    drop_threshold = 5.0
+    for k in range(1, look_steps):
+        j = (i + k) % n
+        if v_brake[j] < v_brake[(j - 1) % n] - drop_threshold:
+            return False
+    return True
+
+
+def forward_pass_energy_aware(v_grip, v_brake, kappa, arc, track_length_m,
+                               v0=None, soc0=SOC_INIT):
+    """Walk the lap forward, picking one of 5 modes per step, integrating v
+    and battery state. Returns (v, soc, mode, power_kw, t)."""
+    n = len(v_grip)
+    ds = np.diff(np.concatenate([arc, [track_length_m]]))
+
+    v_init = v0 if v0 is not None else min(v_grip[0], v_brake[0])
+    v = np.full(n, v_init)
+    soc_arr = np.zeros(n); soc_arr[0] = soc0
+    mode_arr = ["NORMAL"] * n
+    p_kw_arr = np.zeros(n)
+    t_arr = np.zeros(n)
+
+    soc = soc0
+    lap_deploy_j = 0.0
+    t = 0.0
+    t_since_corner_exit = 0.0
+
+    for i in range(n):
+        v_cap = min(v_grip[i], v_brake[i])
+        if v[i] > v_cap:
+            v[i] = v_cap
+
+        # Detect corner exit (κ falls below threshold): reset window
+        in_corner = abs(kappa[i]) > KAPPA_CORNER_THRESH
+        if not in_corner:
+            t_since_corner_exit += 0.0   # accumulated below per step
+        else:
+            t_since_corner_exit = 0.0    # reset whenever we're in a corner
+
+        mode_here = aero_mode(kappa[i])
+        dv_target = v_brake[(i + 1) % n] - v[i]   # if upcoming brake forces a drop
+
+        chosen = _pick_mode(soc, lap_deploy_j, dv_target,
+                            t_since_corner_exit, kappa[i],
+                            _straight_room_ahead(v_brake, i, n))
+        mode_arr[i] = chosen
+        soc_arr[i] = soc
+
+        if chosen == "REGEN":
+            # Brake to v_cap if needed; no propulsion. Regen energy already in v_brake
+            # constraint. Just integrate time and update battery.
+            v_next = min(v[(i + 1) % n], v_cap, v_brake[(i + 1) % n])
+            v[(i + 1) % n] = v_next
+            dt = 2.0 * ds[i] / max(v[i] + v_next, 1e-3)
+            soc += _battery_delta_for_mode("REGEN", dt) / E_BATTERY_CAP_J
+            soc = min(1.0, max(0.0, soc))
+            p_kw_arr[i] = -P_MGU_REGEN_MAX_W / 1000.0
+            t += dt
+            t_arr[i] = t
+            t_since_corner_exit += dt
+            continue
+
+        # Propulsion (DEPLOY / NORMAL / CLIPPING / SUPERCLIP)
+        P_total = _power_for_mode(chosen, v[i])
+        a_lat_used = abs(kappa[i]) * v[i] * v[i]
+        a_lat_max = MU_LAT * (G + downforce(v[i], mode_here) / MASS_KG)
+        ratio_sq = min(1.0, (a_lat_used / max(a_lat_max, 1e-6)) ** 2)
+        a_long_grip = MU_LONG * (G + downforce(v[i], mode_here) / MASS_KG) * math.sqrt(1.0 - ratio_sq)
+        a_long_power = P_total / (MASS_KG * max(v[i], V_FLOOR_MS))
+        a_drag = drag_force(v[i], mode_here) / MASS_KG
+        a_long = min(a_long_grip, a_long_power) - a_drag
+
+        v_next = math.sqrt(max(V_FLOOR_MS ** 2,
+                               v[i] * v[i] + 2.0 * a_long * ds[i]))
+        v_next = min(v_next, v_grip[(i + 1) % n], v_brake[(i + 1) % n])
+        v[(i + 1) % n] = v_next
+
+        dt = 2.0 * ds[i] / max(v[i] + v_next, 1e-3)
+        soc += _battery_delta_for_mode(chosen, dt) / E_BATTERY_CAP_J
+        soc = min(1.0, max(0.0, soc))
+        lap_deploy_j += _deploy_energy_for_mode(chosen, dt)
+        p_kw_arr[i] = P_total / 1000.0
+        t += dt
+        t_arr[i] = t
+        t_since_corner_exit += dt
+
+    # final SoC capture
+    soc_arr_final = soc_arr.copy()
+    return v, soc_arr_final, mode_arr, p_kw_arr, t_arr
+
+
 def main():
     # Status lines contain Unicode (α, ×, κ); force UTF-8 stdout so they
     # don't crash on Windows' default cp1252 console codec.

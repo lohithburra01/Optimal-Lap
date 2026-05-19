@@ -14,6 +14,7 @@ from sim_2026_lap import (
     aero_mode, drag_force, downforce, v_grip_static,
 )
 from sim_2026_lap import compute_v_brake_backward
+from sim_2026_lap import forward_pass_energy_aware
 
 
 def _synth_lap(brake_decel_g=4.5, v_apex_ms=20.0, n=400):
@@ -150,3 +151,37 @@ def test_brake_pass_respects_apex_speed():
     assert v_brake[50] == pytest.approx(30.0, abs=0.5)
     # Far from the corner the brake constraint shouldn't apply
     assert v_brake[10] == pytest.approx(100.0, abs=0.5)
+
+
+def test_forward_pass_no_corners_full_throttle_accel():
+    # Pure straight: full throttle from V_FLOOR upward; no corners means no
+    # backward-pass constraint kicks in
+    n = 500
+    kappa = np.zeros(n)
+    arc = np.linspace(0, 5000.0, n, endpoint=False)
+    v_grip  = np.full(n, 300.0)
+    v_brake = np.full(n, 300.0)
+    v, soc, mode, p_kw, t_arr = forward_pass_energy_aware(
+        v_grip, v_brake, kappa, arc, track_length_m=5000.0,
+        v0=10.0, soc0=1.0)
+    # Speed should be monotonically non-decreasing along the forward walk.
+    # v[0] is excluded: forward_pass_energy_aware is a closed-loop walk whose
+    # final step overwrites v[0] with the wrap-around finish speed (Task 13's
+    # closure iteration uses that); the genuine forward profile is v[1:].
+    assert np.all(np.diff(v[1:]) >= -0.5)
+    # Should reach a high steady speed before end
+    assert v[-1] > 80.0
+
+
+def test_forward_pass_clips_when_battery_empty():
+    # 4 km straight, but start with empty battery -> CLIPPING should fire
+    n = 400
+    kappa = np.zeros(n)
+    arc = np.linspace(0, 4000.0, n, endpoint=False)
+    v_grip  = np.full(n, 300.0)
+    v_brake = np.full(n, 300.0)
+    v, soc, mode, p_kw, t_arr = forward_pass_energy_aware(
+        v_grip, v_brake, kappa, arc, track_length_m=4000.0,
+        v0=50.0, soc0=0.0)   # battery empty
+    # CLIPPING should appear at least once
+    assert "CLIPPING" in mode
