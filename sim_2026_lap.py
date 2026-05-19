@@ -55,6 +55,13 @@ WARM_CDA             = 0.55           # 2026 straight-mode drag-area
 WARM_V_CAP           = 110.0          # m/s safety cap
 WARM_RHO             = 1.225
 
+# ── Telemetry-calibration constants ─────────────────────────────────────
+DECEL_WINDOW_S = 0.30   # peak braking decel / accel power are measured over a
+                        # ~0.3 s window, not adjacent samples: FastF1's
+                        # interpolated speed channel quantizes into a
+                        # plateau-then-step pattern that point-wise dv/dt
+                        # misreads as unphysical (8+ g) spikes.
+
 # Override WARM_* defaults from calibration JSON if present
 _CALIB_PATH = "F1_Pipeline_Assets/calibration/vehicle_calibration.json"
 if os.path.exists(_CALIB_PATH):
@@ -416,16 +423,23 @@ def _read_telemetry_rows(csv_path):
     return rows
 
 
-def extract_peak_decel_g(rows):
-    """Largest observed |dv/dt| under braking, expressed in g. Inputs in
-    CSV-row dict format with speed in km/h."""
+def extract_peak_decel_g(rows, window_s=DECEL_WINDOW_S):
+    """Largest sustained braking deceleration in g, measured as dv over a
+    ~window_s time span starting at each braking sample (robust to FastF1
+    speed-channel step quantization). Inputs are CSV-row dicts, speed in km/h."""
     g_max = 0.0
-    for i in range(1, len(rows)):
-        dt = rows[i]["time_s"] - rows[i-1]["time_s"]
-        if dt <= 1e-3:
+    n = len(rows)
+    for i in range(n):
+        if rows[i]["brake"] <= 50.0:
             continue
-        dv_ms = (rows[i]["speed"] - rows[i-1]["speed"]) / 3.6
-        if rows[i]["brake"] > 50.0 and dv_ms < 0:
+        j = i
+        while j + 1 < n and rows[j]["time_s"] - rows[i]["time_s"] < window_s:
+            j += 1
+        dt = rows[j]["time_s"] - rows[i]["time_s"]
+        if dt < window_s * 0.5:          # too little span (end of lap)
+            continue
+        dv_ms = (rows[j]["speed"] - rows[i]["speed"]) / 3.6
+        if dv_ms < 0.0:
             g = -dv_ms / dt / 9.81
             if g > g_max:
                 g_max = g
@@ -514,15 +528,22 @@ def calibrate_from_telemetry(canada_2025_csv, china_2026_csv, out_path):
     v_apex_obs    = extract_apex_speed_ms(canada)
     clip_zones    = detect_clipping_zones(china)
 
-    # Effective P/m: peak observed acceleration on a sustained-throttle section
-    # times current speed, averaged over a 0.5 s window. Crude but informative.
+    # Effective P/m ceiling: peak observed accel measured over a ~window span on
+    # sustained-full-throttle sections (windowed for the same FastF1 speed-channel
+    # quantization reason as extract_peak_decel_g).
     P_over_m_obs = 0.0
-    for i in range(1, len(canada)):
-        dt = canada[i]["time_s"] - canada[i-1]["time_s"]
-        if dt <= 1e-3 or canada[i]["throttle"] < 99.0:
+    n_can = len(canada)
+    for i in range(n_can):
+        if canada[i]["throttle"] < 99.0:
             continue
-        dv_ms = (canada[i]["speed"] - canada[i-1]["speed"]) / 3.6
-        if dv_ms > 0:
+        j = i
+        while j + 1 < n_can and canada[j]["time_s"] - canada[i]["time_s"] < DECEL_WINDOW_S:
+            j += 1
+        dt = canada[j]["time_s"] - canada[i]["time_s"]
+        if dt < DECEL_WINDOW_S * 0.5:
+            continue
+        dv_ms = (canada[j]["speed"] - canada[i]["speed"]) / 3.6
+        if dv_ms > 0.0:
             v_now = canada[i]["speed"] / 3.6
             p_over_m = (dv_ms / dt) * v_now      # W/kg, ignoring drag for ceiling
             if p_over_m > P_over_m_obs:

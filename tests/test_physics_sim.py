@@ -56,3 +56,23 @@ def test_detect_clipping_zones_finds_flatline_at_top_speed():
     # Should detect 1 clipping zone with frac_in_straight > 0.5
     assert len(zones) >= 1
     assert zones[0]["frac_in_straight"] > 0.5
+
+
+def test_extract_peak_decel_g_robust_to_speed_quantization():
+    # FastF1's speed channel reports a plateau then dumps the accumulated dv
+    # into one normal-dt sample. Point-wise dv/dt misreads this as ~8 g; the
+    # windowed extractor must spread it over the window and stay physical.
+    import numpy as np
+    # 6 s of braking telemetry at ~0.13 s spacing (FastF1-like).
+    t = np.arange(0.0, 6.0, 0.13)
+    # True physics: a steady 4.5 g decel from 90 m/s.
+    v_true = np.maximum(20.0, 90.0 - 4.5 * 9.81 * t)
+    # Quantize speed into 12-km/h steps -> plateau-then-jump artifact.
+    v_kmh = v_true * 3.6
+    v_quant = np.round(v_kmh / 12.0) * 12.0
+    rows = [{"time_s": float(ti), "distance": 0.0, "speed": float(vi),
+             "throttle": 0.0, "brake": 100.0} for ti, vi in zip(t, v_quant)]
+    g = extract_peak_decel_g(rows)
+    # True decel is 4.5 g; allow generous band, but the 8+ g quantization
+    # artifact must NOT leak through.
+    assert 3.5 < g < 6.0, f"quantization artifact leaked: {g:.2f} g"
