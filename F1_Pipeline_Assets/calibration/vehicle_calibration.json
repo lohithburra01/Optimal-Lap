@@ -1,0 +1,46 @@
+{
+  "mu_long_obs": 8.319,
+  "P_over_m_obs": 1410.1,
+  "v_apex_hairpin_obs": 19.19,
+  "clipping_zones_china_2026": [
+    {
+      "start_s": 3.369,
+      "end_s": 4.089,
+      "drop_kmh": 0.0,
+      "duration_s": 0.7200000000000002,
+      "frac_in_straight": 0.6100040666937779
+    },
+    {
+      "start_s": 4.529,
+      "end_s": 5.287,
+      "drop_kmh": 0.0,
+      "duration_s": 0.758,
+      "frac_in_straight": 0.8458723058153721
+    },
+    {
+      "start_s": 22.729,
+      "end_s": 23.289,
+      "drop_kmh": 0.0,
+      "duration_s": 0.5600000000000023,
+      "frac_in_straight": 0.7898089171974523
+    },
+    {
+      "start_s": 33.849,
+      "end_s": 34.569,
+      "drop_kmh": 0.0,
+      "duration_s": 0.720000000000006,
+      "frac_in_straight": 0.4868333702146487
+    },
+    {
+      "start_s": 69.41,
+      "end_s": 70.729,
+      "drop_kmh": 0.0,
+      "duration_s": 1.3190000000000026,
+      "frac_in_straight": 0.5740694322596817
+    }
+  ],
+  "_source": {
+    "canada_2025_csv": "F1_Pipeline_Assets/exports/reference_2025_canada_q.csv",
+    "china_2026_csv": "F1_Pipeline_Assets/exports/reference_2026_china_q.csv"
+  }
+}

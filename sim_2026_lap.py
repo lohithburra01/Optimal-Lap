@@ -55,6 +55,24 @@ WARM_CDA             = 0.55           # 2026 straight-mode drag-area
 WARM_V_CAP           = 110.0          # m/s safety cap
 WARM_RHO             = 1.225
 
+# Override WARM_* defaults from calibration JSON if present
+_CALIB_PATH = "F1_Pipeline_Assets/calibration/vehicle_calibration.json"
+if os.path.exists(_CALIB_PATH):
+    with open(_CALIB_PATH, encoding="utf-8") as _f:
+        _calib = json.load(_f)
+    # mu_long -> WARM_A_BRK_MAX is an accel ceiling: a_brk = mu_long * g
+    if "mu_long_obs" in _calib:
+        WARM_A_BRK_MAX = _calib["mu_long_obs"] * 9.81
+    # P/m -> WARM_P_MAX_W = (P/m) * MASS_KG
+    if "P_over_m_obs" in _calib:
+        WARM_P_MAX_W = _calib["P_over_m_obs"] * WARM_MASS_KG
+    # v_apex_hairpin_obs -> tighten WARM_A_LAT_MAX so v_grip at kappa_hairpin matches
+    if "v_apex_hairpin_obs" in _calib:
+        v_apex = _calib["v_apex_hairpin_obs"]
+        kappa_hairpin = 1.0 / 15.0   # ~15 m radius for Canada T10
+        WARM_A_LAT_MAX = v_apex * v_apex * kappa_hairpin
+    print(f"[calibrate] overrides applied from {_CALIB_PATH}")
+
 
 def kappa_ds_menger(pts):
     """Discrete signed curvature κ and segment length ds at each station of a
@@ -377,6 +395,156 @@ def build_raceline(outer_raw, inner_raw):
     print(f"[sim] |κ|max: {peak_kappa_q:.4f} (IQP seed) → "
           f"{peak_kappa_n:.4f} (refined)")
     return raceline, arc, kappa_final, total_len
+
+
+def _read_telemetry_rows(csv_path):
+    """Read a CSV (fetch_fastest_lap.py format) as a list of dicts with float
+    time_s, distance, speed [km/h], throttle, brake."""
+    rows = []
+    with open(csv_path, encoding="utf-8") as f:
+        for r in csv.DictReader(f):
+            try:
+                rows.append({
+                    "time_s":   float(r["time_s"]),
+                    "distance": float(r["distance"]),
+                    "speed":    float(r["speed"]),
+                    "throttle": float(r.get("throttle", 0) or 0),
+                    "brake":    float(r.get("brake", 0) or 0),
+                })
+            except (ValueError, KeyError):
+                continue
+    return rows
+
+
+def extract_peak_decel_g(rows):
+    """Largest observed |dv/dt| under braking, expressed in g. Inputs in
+    CSV-row dict format with speed in km/h."""
+    g_max = 0.0
+    for i in range(1, len(rows)):
+        dt = rows[i]["time_s"] - rows[i-1]["time_s"]
+        if dt <= 1e-3:
+            continue
+        dv_ms = (rows[i]["speed"] - rows[i-1]["speed"]) / 3.6
+        if rows[i]["brake"] > 50.0 and dv_ms < 0:
+            g = -dv_ms / dt / 9.81
+            if g > g_max:
+                g_max = g
+    return g_max
+
+
+def extract_apex_speed_ms(rows):
+    """Minimum sustained speed in the lap (in m/s). Sustained = the lowest
+    point must be flanked by 5+ samples within 2 m/s of it on both sides,
+    to avoid picking a noise dip."""
+    v_ms = [r["speed"] / 3.6 for r in rows]
+    n = len(v_ms)
+    best = float("inf")
+    for i in range(5, n - 5):
+        v = v_ms[i]
+        if v < best and all(abs(v_ms[j] - v) < 2.0 for j in range(i-5, i+6)):
+            best = v
+    return best if best < float("inf") else min(v_ms)
+
+
+def detect_clipping_zones(rows, flatline_dvdt_threshold=0.3, min_zone_s=0.5):
+    """Find sections where speed flatlines while throttle is pinned. Each
+    zone is returned as {start_s, end_s, drop_kmh, duration_s, frac_in_straight}
+    where frac_in_straight is the (start - last_corner_exit) / straight_length."""
+    # First, identify the *containing* full-throttle straight for each row,
+    # so we can compute fraction-into-the-straight for each clipping zone.
+    n = len(rows)
+    full_throttle = [r["throttle"] >= 99.0 and r["brake"] < 1.0 for r in rows]
+
+    # Find contiguous full-throttle runs
+    runs = []
+    i = 0
+    while i < n:
+        if full_throttle[i]:
+            j = i
+            while j < n and full_throttle[j]:
+                j += 1
+            if rows[j-1]["time_s"] - rows[i]["time_s"] > 1.5:
+                runs.append((i, j - 1))
+            i = j
+        else:
+            i += 1
+
+    zones = []
+    for r_start, r_end in runs:
+        run_dur = rows[r_end]["time_s"] - rows[r_start]["time_s"]
+        # Find sub-segment(s) where dv/dt is near zero (clipping)
+        k = r_start
+        while k < r_end:
+            dt = rows[k+1]["time_s"] - rows[k]["time_s"]
+            if dt <= 1e-3:
+                k += 1; continue
+            dv_ms = (rows[k+1]["speed"] - rows[k]["speed"]) / 3.6
+            if abs(dv_ms / dt) < flatline_dvdt_threshold and rows[k]["speed"] > 250.0:
+                # Start of a clipping zone; extend while still flat
+                cs = k
+                while k + 1 <= r_end:
+                    dt2 = rows[k+1]["time_s"] - rows[k]["time_s"]
+                    if dt2 <= 1e-3: k += 1; continue
+                    dv2 = (rows[k+1]["speed"] - rows[k]["speed"]) / 3.6
+                    if abs(dv2 / dt2) >= flatline_dvdt_threshold:
+                        break
+                    k += 1
+                ce = k
+                zone_dur = rows[ce]["time_s"] - rows[cs]["time_s"]
+                if zone_dur >= min_zone_s:
+                    drop = rows[cs]["speed"] - min(r["speed"] for r in rows[cs:ce+1])
+                    frac = (rows[cs]["time_s"] - rows[r_start]["time_s"]) / max(run_dur, 1e-3)
+                    zones.append({
+                        "start_s":        rows[cs]["time_s"],
+                        "end_s":          rows[ce]["time_s"],
+                        "drop_kmh":       float(drop),
+                        "duration_s":     float(zone_dur),
+                        "frac_in_straight": float(frac),
+                    })
+            k += 1
+    return zones
+
+
+def calibrate_from_telemetry(canada_2025_csv, china_2026_csv, out_path):
+    """Read reference CSVs, extract calibration values, write JSON."""
+    canada = _read_telemetry_rows(canada_2025_csv)
+    china = _read_telemetry_rows(china_2026_csv)
+
+    mu_long_obs   = extract_peak_decel_g(canada)
+    v_apex_obs    = extract_apex_speed_ms(canada)
+    clip_zones    = detect_clipping_zones(china)
+
+    # Effective P/m: peak observed acceleration on a sustained-throttle section
+    # times current speed, averaged over a 0.5 s window. Crude but informative.
+    P_over_m_obs = 0.0
+    for i in range(1, len(canada)):
+        dt = canada[i]["time_s"] - canada[i-1]["time_s"]
+        if dt <= 1e-3 or canada[i]["throttle"] < 99.0:
+            continue
+        dv_ms = (canada[i]["speed"] - canada[i-1]["speed"]) / 3.6
+        if dv_ms > 0:
+            v_now = canada[i]["speed"] / 3.6
+            p_over_m = (dv_ms / dt) * v_now      # W/kg, ignoring drag for ceiling
+            if p_over_m > P_over_m_obs:
+                P_over_m_obs = p_over_m
+
+    payload = {
+        "mu_long_obs":        round(mu_long_obs, 3),
+        "P_over_m_obs":       round(P_over_m_obs, 1),
+        "v_apex_hairpin_obs": round(v_apex_obs, 2),
+        "clipping_zones_china_2026": clip_zones,
+        "_source": {
+            "canada_2025_csv": canada_2025_csv,
+            "china_2026_csv":  china_2026_csv,
+        },
+    }
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+    print(f"[calibrate] mu_long={mu_long_obs:.2f}g  P/m={P_over_m_obs:.0f} W/kg  "
+          f"v_apex={v_apex_obs:.1f} m/s  clipping zones={len(clip_zones)}")
+    print(f"[calibrate] wrote {out_path}")
+    return payload
 
 
 def main():
