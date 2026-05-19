@@ -100,6 +100,20 @@ MAP_SIZE          = 240
 MAP_Y_TOP         = 460
 MAP_X_RIGHT_INSET = 40
 
+# HUD — 2026 telemetry
+BATT_BAR_W           = 600
+BATT_BAR_H           = 32
+BATT_BAR_X           = (WIDTH - BATT_BAR_W) // 2
+BATT_BAR_Y           = 1080
+MODE_LABEL_Y         = 1135
+
+MODE_COLORS = {
+    "DEPLOY":    (60, 220, 100),
+    "CLIPPING":  (255, 60, 60),
+    "SUPERCLIP": (255, 140, 0),
+    "REGEN":     (255, 230, 0),
+}
+
 
 # =============================================================
 # Stage 1: Outline → corridor + widths
@@ -730,9 +744,29 @@ def draw_centered(draw, x, y, text, font, fill):
     draw.text((x - w / 2, y - h / 2 - 4), text, font=font, fill=fill)
 
 
+def draw_battery_bar(draw, x, y, w, h, soc_01, mode, font):
+    draw.rectangle([x, y, x + w, y + h], fill=(40, 40, 40), outline=(200, 200, 200), width=2)
+    fill_color = (60, 220, 100) if soc_01 > 0.70 else \
+                 (255, 200, 60) if soc_01 > 0.30 else (255, 80, 80)
+    fill_x_end = x + 2 + int((w - 4) * max(0.0, min(1.0, soc_01)))
+    draw.rectangle([x + 2, y + 2, fill_x_end, y + h - 2], fill=fill_color)
+    draw.text((x + w + 12, y + h // 2 - 12), f"{int(soc_01 * 100):d}%",
+              font=font, fill=(200, 200, 200))
+    if mode == "CLIPPING":
+        draw.rectangle([x - 4, y - 4, x + w + 4, y + h + 4],
+                       outline=(255, 40, 40), width=4)
+
+
+def draw_mode_label(draw, cx, y, mode_str, font):
+    color = MODE_COLORS.get(mode_str)
+    if color is None:
+        return
+    draw_centered(draw, cx, y, mode_str, font, color)
+
+
 def render_video(outer, inner, raceline, ver_t, ver_d, ver_v_ms, lap_time,
                  out_path, track_name, zoom, trail_frames, fps,
-                 outer_kerbs=None, inner_kerbs=None):
+                 outer_kerbs=None, inner_kerbs=None, soc=None, mode=None):
     """ver_t,ver_d,ver_v_ms come from real telemetry. The dot's position at
     video time `t` is found by:  d_at_t = interp(t, ver_t, ver_d), then
     d_at_t is mapped to arc-length on `raceline` (linear scale by ratio of
@@ -772,6 +806,9 @@ def render_video(outer, inner, raceline, ver_t, ver_d, ver_v_ms, lap_time,
     font_speed      = load_font(72, True)
     font_speed_unit = load_font(28, False)
     font_wm         = load_font(24, True)
+    font_mode_label = load_font(40, True)
+    font_soc_pct    = load_font(22, False)
+    has_hud_2026    = soc is not None and mode is not None
 
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(out_path, fourcc, fps, (WIDTH, HEIGHT))
@@ -874,6 +911,14 @@ def render_video(outer, inner, raceline, ver_t, ver_d, ver_v_ms, lap_time,
         speed_kmh = int(round(v_now * 3.6))
         draw_centered(draw, WIDTH // 2, SPEED_Y, f"{speed_kmh}", font_speed, (255, 255, 255))
         draw_centered(draw, WIDTH // 2, SPEED_Y + KMH_Y_OFFSET, "KM/H", font_speed_unit, (200, 200, 200))
+        if has_hud_2026:
+            soc_now = float(np.interp(t, ver_t, soc)) / 100.0
+            idx_m = max(0, min(len(mode) - 1,
+                               int(np.searchsorted(ver_t, t, side="right")) - 1))
+            mode_now = mode[idx_m]
+            draw_battery_bar(draw, BATT_BAR_X, BATT_BAR_Y, BATT_BAR_W, BATT_BAR_H,
+                             soc_now, mode_now, font_soc_pct)
+            draw_mode_label(draw, WIDTH // 2, MODE_LABEL_Y, mode_now, font_mode_label)
         lap_str = f"LAP TIME  {int(lap_time // 60):d}:{lap_time % 60:06.3f}"
         draw_centered(draw, WIDTH // 2, LAP_Y, lap_str, font_sub, (180, 180, 180))
         draw_centered(draw, WIDTH // 2, WATERMARK_Y, WATERMARK_TEXT, font_wm, (150, 150, 150))
@@ -951,7 +996,10 @@ def main():
     # Critical: align the raceline's parameter origin (and possibly its direction)
     # with VER's lap. Without this, dot-position vs. speed-readout is desynced
     # because Blender's boundary walk starts at an arbitrary point.
-    raceline = align_raceline_to_telemetry(raceline, ver_d, ver_v)
+    if soc is None:   # real telemetry → cross-correlate to find S/F offset
+        raceline = align_raceline_to_telemetry(raceline, ver_d, ver_v)
+    else:
+        print("[align] synthetic CSV detected — alignment skipped")
 
     track_name = args.track_name or os.path.splitext(os.path.basename(args.outline))[0]
     out_path = args.out or f"{os.path.splitext(os.path.basename(args.outline))[0]}_optimal_lap.mp4"
@@ -960,7 +1008,8 @@ def main():
         outer_visual, inner_visual, raceline,
         ver_t, ver_d, ver_v, ver_lap,
         out_path, track_name, args.zoom, args.trail_frames, args.fps,
-        outer_kerbs=outer_kerbs, inner_kerbs=inner_kerbs
+        outer_kerbs=outer_kerbs, inner_kerbs=inner_kerbs,
+        soc=soc, mode=mode
     )
 
 
