@@ -931,6 +931,48 @@ def write_csv(out_path, v, soc, mode, p_kw, t_arr, arc, track_length_m, fps=30):
     print(f"[sim] wrote {n_out} rows -> {out_path}")
 
 
+def assert_sanity(v, soc, mode, p_kw, t_arr, lap_deploy_j_total=None):
+    """Hard-fail (exit non-zero) if the simulated lap is out of physical bounds.
+    Magnitudes are from spec §6 + §3.1 (real 2026 telemetry patterns)."""
+    T_lap = float(t_arr[-1])
+    v_kmh_max = float(np.max(v) * 3.6)
+    v_kmh_min = float(np.min(v) * 3.6)
+    n_clip = sum(1 for m in mode if m == "CLIPPING")
+    n_super = sum(1 for m in mode if m == "SUPERCLIP")
+
+    fails = []
+    if not (70.0 <= T_lap <= 80.0):
+        fails.append(f"T_lap {T_lap:.2f}s outside [70, 80]")
+    if not (290.0 <= v_kmh_max <= 340.0):
+        fails.append(f"peak v {v_kmh_max:.1f} km/h outside [290, 340]")
+    if not (70.0 <= v_kmh_min <= 110.0):
+        fails.append(f"hairpin v {v_kmh_min:.1f} km/h outside [70, 110]")
+    if n_clip + n_super == 0:
+        fails.append("zero clipping zones — expected at least one (Casino Straight)")
+
+    # Clipping-pattern checks against §3.1 observed 2026 telemetry magnitudes
+    if n_clip > 0:
+        clip_indices = [i for i, m in enumerate(mode) if m == "CLIPPING"]
+        first_clip = clip_indices[0]
+        last_clip  = clip_indices[-1]
+        frac_first = first_clip / len(mode)
+        # Drop magnitude: speed at first clip station vs minimum during clip window
+        v_kmh_at_clip_start = float(v[first_clip] * 3.6)
+        v_kmh_during_clip   = float(min(v[first_clip:last_clip + 1]) * 3.6)
+        clip_drop_kmh = v_kmh_at_clip_start - v_kmh_during_clip
+        # Drop should be 0–50 km/h (zero is acceptable if speed just flatlines)
+        if clip_drop_kmh > 60.0:
+            fails.append(f"clip drop {clip_drop_kmh:.1f} km/h > 60 (real F1 caps near 50)")
+
+    print(f"[sanity] T_lap={T_lap:.2f}s  v=[{v_kmh_min:.0f},{v_kmh_max:.0f}] km/h  "
+          f"clip frames={n_clip}  superclip frames={n_super}")
+
+    if fails:
+        for f in fails:
+            print(f"[sanity] FAIL: {f}", file=sys.stderr)
+        sys.exit(10)
+
+
 def main():
     # Status lines contain Unicode (α, ×, κ); force UTF-8 stdout so they
     # don't crash on Windows' default cp1252 console codec.
@@ -967,6 +1009,7 @@ def main():
 
     v, soc, mode, p_kw, t_arr = simulate_lap(raceline, arc, kappa, total_len)
     write_csv(args.csv_out, v, soc, mode, p_kw, t_arr, arc, total_len, fps=30)
+    assert_sanity(v, soc, mode, p_kw, t_arr)
 
 
 if __name__ == "__main__":
