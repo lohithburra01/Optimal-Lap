@@ -37,7 +37,14 @@ _PAIRS_PER_CMD = {
 def parse_svg_path_d(d_str):
     """Tokenise an SVG path `d` attribute into a list of (CMD, [(x,y), ...]) tuples
     with all coordinates expanded to absolute. Supports M/m, L/l, C/c, Z/z —
-    which is all the Canada Inkscape export uses."""
+    which is all the Canada Inkscape export uses.
+
+    NOTE for callers extracting `d=` from raw SVG text via regex: use the pattern
+    r'(?:^|\\s)d\\s*=\\s*"([^"]+)"' (d preceded by whitespace or start-of-string),
+    NOT the bare r'd\\s*=\\s*"([^"]+)"'. The bare pattern matches the substring
+    `d="..."` inside Inkscape id attributes (e.g. id="svg3151") before it ever
+    reaches the actual <path d="..."> attribute.
+    """
     tokens = re.findall(r"[MmLlCcZz]|" + _NUM_RE.pattern, d_str)
 
     out = []

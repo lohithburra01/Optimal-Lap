@@ -39,7 +39,7 @@ def test_canada_circuit_path_parses():
         text = f.read()
     # Extract the d="..." attribute (single path in file)
     import re
-    m = re.search(r'd\s*=\s*"([^"]+)"', text)
+    m = re.search(r'(?:^|\s)d\s*=\s*"([^"]+)"', text)
     assert m is not None, "no d attribute found in CANADA CIRCUIT.svg"
     cmds = parse_svg_path_d(m.group(1))
     # Must contain a moveto, several cubics, and a closepath
