@@ -258,3 +258,163 @@ def opt_curv_kappa_rate(reftrack, normvectors, A,
     alpha = x[:N_pts]
     slack = x[N_pts:]
     return alpha, slack
+
+
+def build_raceline(outer_raw, inner_raw):
+    """Driver-physical racing line — IQP seed + jerk-constrained min-curv QP
+    refinement (mirrors OBJECT_OT_GenerateRacingLineMinTime.execute() at
+    f1_track_visualizer_addonLastLastLasttry5.py:1893)."""
+    import trajectory_planning_helpers as tph
+
+    # ── A1. IQP seed ─────────────────────────────────────────────────────
+    outer = smooth_resample_loop(outer_raw, N_CORRIDOR_POINTS, CORR_SMOOTH_S)
+    inner = smooth_resample_loop(inner_raw, N_CORRIDOR_POINTS, CORR_SMOOTH_S)
+    outer, inner = align_loops(outer, inner)
+    cl_qp, wr_safe, wl_safe = build_centerline_and_widths(outer, inner)
+    print(f"[sim] corridor widths: r=[{wr_safe.min():.2f},{wr_safe.max():.2f}] "
+          f"l=[{wl_safe.min():.2f},{wl_safe.max():.2f}]")
+
+    iqp_seed_line, _ = run_iqp(cl_qp, wr_safe, wl_safe)
+
+    # The IQP seed needs to be paired with its α-seed (offsets from cl_qp along
+    # cl_qp's left-normals). We compute α from (iqp_seed_line − cl_qp) · nrm_init.
+    # First, resample the IQP seed to match cl_qp's sample count.
+    from scipy.interpolate import splprep, splev
+    rl_closed = np.vstack([iqp_seed_line, iqp_seed_line[0]])
+    arc_iqp = np.concatenate([[0.0],
+        np.cumsum(np.linalg.norm(np.diff(rl_closed, axis=0), axis=1))])
+    tck_iqp, _ = splprep([rl_closed[:, 0], rl_closed[:, 1]],
+                          u=arc_iqp, s=0, per=True)
+    N = len(cl_qp)
+    u_new = np.linspace(0.0, arc_iqp[-1], N, endpoint=False)
+    sx, sy = splev(u_new, tck_iqp)
+    seed_on_cl_qp = np.column_stack([sx, sy])
+
+    # cl_qp-frame normals (NOT tph spline normals — see
+    # memory/project_mintime_jerk_constrained_qp.md key fixes)
+    tang_init = np.zeros((N, 2))
+    for i in range(N):
+        d  = cl_qp[(i + 3) % N] - cl_qp[(i - 3) % N]
+        nm = np.linalg.norm(d)
+        tang_init[i] = d / nm if nm > 1e-8 else np.array([1.0, 0.0])
+    nrm_init = np.column_stack([-tang_init[:, 1], tang_init[:, 0]])
+
+    alpha_seed = np.einsum("ij,ij->i", seed_on_cl_qp - cl_qp, nrm_init)
+    print(f"[sim] IQP seed alpha_seed: max|a|={np.max(np.abs(alpha_seed)):.2f}m")
+
+    # ── A2. Jerk-constrained QP refinement ───────────────────────────────
+    # Mirror addon execute() lines 2060-2151 in f1_track_visualizer_addonLastLastLasttry5.py
+    w_veh = 1.9
+    line_q = cl_qp + alpha_seed[:, None] * nrm_init
+    kappa_q, ds_q = kappa_ds_menger(line_q)
+    v_q = warm_vel_profile(kappa_q, ds_q)
+    peak_kappa_q = float(np.max(np.abs(kappa_q)))
+
+    v_floor = 5.0
+    base_bound = J_MAX_LAT_JERK * ds_q / np.maximum(v_q, v_floor) ** 3
+    rate_bound_up = base_bound
+    rate_bound_dn = base_bound * UNWIND_RATIO
+
+    # α-regularizer tent: nonzero on straights (κ≈0), zero in corners
+    tent = np.maximum(0.0, 1.0 - np.abs(kappa_q) / max(KAPPA_FLOOR, 1e-9))
+    alpha_reg_weights = STRAIGHT_STIFF * tent
+    n_straight = int(np.sum(alpha_reg_weights > 1e-6))
+    print(f"[sim] J_max={J_MAX_LAT_JERK} unwind×{UNWIND_RATIO} "
+          f"α-reg active on {n_straight}/{N} straight stations")
+
+    # Spline matrix on line_q geometry
+    refpath = np.vstack([line_q, line_q[0]])
+    _, _, A_mat, _ = tph.calc_splines.calc_splines(
+        path=refpath, use_dist_scaling=True)
+
+    # Widths relative to line_q in nrm_init frame (matches addon line 2106)
+    cur_wr = np.maximum(wr_safe - alpha_seed, w_veh * 0.5 + SAFETY_MARGIN_REFINE)
+    cur_wl = np.maximum(wl_safe + alpha_seed, w_veh * 0.5 + SAFETY_MARGIN_REFINE)
+    reftrack_q = np.column_stack([line_q, cur_wr, cur_wl])
+
+    alpha_perturb, slack_vec = opt_curv_kappa_rate(
+        reftrack_q, nrm_init, A_mat,
+        rate_bound_up, rate_bound_dn,
+        alpha_reg_weights, w_veh,
+    )
+    n_slack_nz = int(np.sum(slack_vec > 1e-6))
+    print(f"[sim] refinement slack: max={slack_vec.max():.2e} "
+          f"({n_slack_nz}/{N} stations relaxed)")
+
+    # Clip α perturbation to the width envelope (defensive)
+    alpha_perturb = np.clip(
+        alpha_perturb,
+        -cur_wl + w_veh * 0.5 + SAFETY_MARGIN_REFINE,
+         cur_wr - w_veh * 0.5 - SAFETY_MARGIN_REFINE,
+    )
+    refined_line = line_q + nrm_init * alpha_perturb[:, None]
+
+    # Resample to uniform arc length on the FINAL refined line
+    rl_closed = np.vstack([refined_line, refined_line[0]])
+    arc_r = np.concatenate([[0.0],
+        np.cumsum(np.linalg.norm(np.diff(rl_closed, axis=0), axis=1))])
+    total_len = float(arc_r[-1])
+    tck, _ = splprep([rl_closed[:, 0], rl_closed[:, 1]], u=arc_r, s=0, per=True)
+    n_out = max(10, int(total_len / 2.0))
+    u_new = np.linspace(0.0, total_len, n_out, endpoint=False)
+    rx, ry = splev(u_new, tck)
+    raceline = np.column_stack([rx, ry])
+
+    # Final κ on the uniformly-sampled raceline
+    seg = np.linalg.norm(np.diff(np.vstack([raceline, raceline[0]]), axis=0), axis=1)
+    arc = np.concatenate([[0.0], np.cumsum(seg)])[:-1]
+    kappa_final = np.zeros(len(raceline))
+    for i in range(len(raceline)):
+        a = raceline[(i - 1) % len(raceline)]
+        b = raceline[i]
+        c = raceline[(i + 1) % len(raceline)]
+        ab = b - a; bc = c - b
+        cross = ab[0] * bc[1] - ab[1] * bc[0]
+        denom = np.linalg.norm(ab) * np.linalg.norm(bc) * np.linalg.norm(c - a)
+        kappa_final[i] = 0.0 if denom < 1e-9 else 2.0 * cross / denom
+
+    peak_kappa_n = float(np.max(np.abs(kappa_final)))
+    print(f"[sim] |κ|max: {peak_kappa_q:.4f} (IQP seed) → "
+          f"{peak_kappa_n:.4f} (refined)")
+    return raceline, arc, kappa_final, total_len
+
+
+def main():
+    # Status lines contain Unicode (α, ×, κ); force UTF-8 stdout so they
+    # don't crash on Windows' default cp1252 console codec.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--outline", required=True)
+    ap.add_argument("--raceline-out", required=True)
+    ap.add_argument("--csv-out", required=True)
+    args = ap.parse_args()
+
+    with open(args.outline, encoding="utf-8") as f:
+        data = json.load(f)
+    outer_raw = np.array(data["outer"], dtype=float)
+    inner_raw = np.array(data["inner"], dtype=float)
+    print(f"[sim] outline loaded: outer={len(outer_raw)} inner={len(inner_raw)}")
+
+    raceline, arc, kappa, total_len = build_raceline(outer_raw, inner_raw)
+    print(f"[sim] raceline: {len(raceline)} pts, {total_len:.0f} m, "
+          f"|κ|max={np.abs(kappa).max():.4f}")
+
+    os.makedirs(os.path.dirname(os.path.abspath(args.raceline_out)), exist_ok=True)
+    with open(args.raceline_out, "w", encoding="utf-8") as f:
+        json.dump({
+            "raceline":       raceline.tolist(),
+            "arc_length":     arc.tolist(),
+            "kappa":          kappa.tolist(),
+            "track_length_m": float(total_len),
+        }, f)
+    print(f"[sim] wrote raceline -> {args.raceline_out}")
+
+    print("[sim] (physics CSV not yet implemented — Phase 3 of plan)")
+
+
+if __name__ == "__main__":
+    main()
