@@ -53,7 +53,9 @@ N_CORRIDOR_POINTS = 800       # IQP corridor density (heavily smoothed, INSET ap
 N_VISUAL_POINTS   = 4000      # visual edges density (lightly smoothed, NO inset → wider than IQP corridor)
 CORR_SMOOTH_S     = 30.0      # heavy smoothing for IQP corridor
 VISUAL_SMOOTH_S   = 10.0      # light smoothing for rendered edges (close to raw shape)
-INSET_M           = 1.5       # IQP-corridor inset on each side
+INSET_M           = 1.0       # IQP-corridor inset on each side — keeps the
+                              #   racing line a clear margin in from the track
+                              #   edge (not hugging / crossing it)
 VISUAL_OUTSET_M   = 2.5       # push rendered edges outward this far → visual always wider than IQP corridor
 KAPPA_BOUND       = 0.40
 VEH_WIDTH         = 1.9
@@ -66,7 +68,7 @@ IQP_OUTPUT_SMOOTH = 1.0       # gaussian sigma on cur_ref before final splprep
 # Render
 WIDTH, HEIGHT     = 1080, 1920
 DEFAULT_FPS       = 30
-DEFAULT_ZOOM      = 15.0
+DEFAULT_ZOOM      = 30.0
 DEFAULT_TRAIL     = 180
 TRACK_FILL        = (40, 40, 40)
 TRACK_EDGE        = (255, 255, 255)
@@ -100,16 +102,11 @@ MAP_SIZE          = 240
 MAP_Y_TOP         = 460
 MAP_X_RIGHT_INSET = 40
 
-# HUD — 2026 telemetry
-BATT_BAR_W           = 600
-BATT_BAR_H           = 32
-BATT_BAR_X           = (WIDTH - BATT_BAR_W) // 2
-BATT_BAR_Y           = 1080
+# HUD — 2026 power-mode label
 MODE_LABEL_Y         = 1135
 
 MODE_COLORS = {
     "DEPLOY":    (60, 220, 100),
-    "CLIPPING":  (255, 60, 60),
     "SUPERCLIP": (255, 140, 0),
     "REGEN":     (255, 230, 0),
 }
@@ -744,19 +741,6 @@ def draw_centered(draw, x, y, text, font, fill):
     draw.text((x - w / 2, y - h / 2 - 4), text, font=font, fill=fill)
 
 
-def draw_battery_bar(draw, x, y, w, h, soc_01, mode, font):
-    draw.rectangle([x, y, x + w, y + h], fill=(40, 40, 40), outline=(200, 200, 200), width=2)
-    fill_color = (60, 220, 100) if soc_01 > 0.70 else \
-                 (255, 200, 60) if soc_01 > 0.30 else (255, 80, 80)
-    fill_x_end = x + 2 + int((w - 4) * max(0.0, min(1.0, soc_01)))
-    draw.rectangle([x + 2, y + 2, fill_x_end, y + h - 2], fill=fill_color)
-    draw.text((x + w + 12, y + h // 2 - 12), f"{int(soc_01 * 100):d}%",
-              font=font, fill=(200, 200, 200))
-    if mode == "CLIPPING":
-        draw.rectangle([x - 4, y - 4, x + w + 4, y + h + 4],
-                       outline=(255, 40, 40), width=4)
-
-
 def draw_mode_label(draw, cx, y, mode_str, font):
     color = MODE_COLORS.get(mode_str)
     if color is None:
@@ -790,13 +774,28 @@ def render_video(outer, inner, raceline, ver_t, ver_d, ver_v_ms, lap_time,
 
     MAP_X = WIDTH - MAP_SIZE - MAP_X_RIGHT_INSET
     MAP_Y = MAP_Y_TOP
-    map_scale = MAP_SIZE / max(track_w, track_h) * 0.95
+    # Minimap rotated 45 deg anticlockwise. Rotate every point about the track
+    # centroid, then scale/centre from the ROTATED extents so it still fills
+    # the minimap box.
+    MAP_ROT = math.radians(45.0)
+    _mrc, _mrs = math.cos(MAP_ROT), math.sin(MAP_ROT)
     map_cx = (all_pts[:, 0].max() + all_pts[:, 0].min()) / 2
     map_cy = (all_pts[:, 1].max() + all_pts[:, 1].min()) / 2
 
+    def _map_rot(pt):
+        dx = pt[0] - map_cx
+        dy = pt[1] - map_cy
+        return (dx * _mrc - dy * _mrs, dx * _mrs + dy * _mrc)
+
+    _rot_all = np.array([_map_rot(p) for p in all_pts])
+    _rcx = (_rot_all[:, 0].max() + _rot_all[:, 0].min()) / 2
+    _rcy = (_rot_all[:, 1].max() + _rot_all[:, 1].min()) / 2
+    map_scale = MAP_SIZE / max(np.ptp(_rot_all[:, 0]), np.ptp(_rot_all[:, 1])) * 0.95
+
     def w2map(pt):
-        return (int(MAP_X + MAP_SIZE / 2 + (pt[0] - map_cx) * map_scale),
-                int(MAP_Y + MAP_SIZE / 2 - (pt[1] - map_cy) * map_scale))
+        rx, ry = _map_rot(pt)
+        return (int(MAP_X + MAP_SIZE / 2 + (rx - _rcx) * map_scale),
+                int(MAP_Y + MAP_SIZE / 2 - (ry - _rcy) * map_scale))
 
     map_outer = np.array([w2map(p) for p in outer], np.int32)
     map_inner = np.array([w2map(p) for p in inner], np.int32)
@@ -806,9 +805,8 @@ def render_video(outer, inner, raceline, ver_t, ver_d, ver_v_ms, lap_time,
     font_speed      = load_font(72, True)
     font_speed_unit = load_font(28, False)
     font_wm         = load_font(24, True)
-    font_mode_label = load_font(40, True)
-    font_soc_pct    = load_font(22, False)
-    has_hud_2026    = soc is not None and mode is not None
+    font_mode_label = load_font(24, True)
+    has_mode_hud    = mode is not None
 
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(out_path, fourcc, fps, (WIDTH, HEIGHT))
@@ -911,14 +909,10 @@ def render_video(outer, inner, raceline, ver_t, ver_d, ver_v_ms, lap_time,
         speed_kmh = int(round(v_now * 3.6))
         draw_centered(draw, WIDTH // 2, SPEED_Y, f"{speed_kmh}", font_speed, (255, 255, 255))
         draw_centered(draw, WIDTH // 2, SPEED_Y + KMH_Y_OFFSET, "KM/H", font_speed_unit, (200, 200, 200))
-        if has_hud_2026:
-            soc_now = float(np.interp(t, ver_t, soc)) / 100.0
+        if has_mode_hud:
             idx_m = max(0, min(len(mode) - 1,
                                int(np.searchsorted(ver_t, t, side="right")) - 1))
-            mode_now = mode[idx_m]
-            draw_battery_bar(draw, BATT_BAR_X, BATT_BAR_Y, BATT_BAR_W, BATT_BAR_H,
-                             soc_now, mode_now, font_soc_pct)
-            draw_mode_label(draw, WIDTH // 2, MODE_LABEL_Y, mode_now, font_mode_label)
+            draw_mode_label(draw, WIDTH // 2, MODE_LABEL_Y, mode[idx_m], font_mode_label)
         lap_str = f"LAP TIME  {int(lap_time // 60):d}:{lap_time % 60:06.3f}"
         draw_centered(draw, WIDTH // 2, LAP_Y, lap_str, font_sub, (180, 180, 180))
         draw_centered(draw, WIDTH // 2, WATERMARK_Y, WATERMARK_TEXT, font_wm, (150, 150, 150))
@@ -965,15 +959,21 @@ def main():
     inner_corr = smooth_resample_loop(inner_raw, N_CORRIDOR_POINTS, CORR_SMOOTH_S)
     outer_corr, inner_corr = align_loops(outer_corr, inner_corr)
 
-    # Visual edges: lightly smoothed raw, then PUSHED OUTWARD by VISUAL_OUTSET_M
-    # so the rendered corridor is guaranteed wider than the IQP corridor at every
-    # station — including at any localised inward jags in the user's hand-separated
-    # mesh that heavy IQP-smoothing averages out but light visual smoothing keeps.
+    # Visual edges: lightly smoothed raw outline.
+    # The VISUAL_OUTSET_M outward push exists only for the Miami inline-IQP path,
+    # where the outline is a hand-separated Blender mesh with inward jags and the
+    # rendered road must stay wider than the heavily-smoothed IQP corridor.
+    # For the synthetic/precomputed-raceline path (Canada) the outline is a clean
+    # SVG-derived loop with no jags — outsetting it there only pushes the drawn
+    # edge metres away from the apex the racing line is built to touch, so the
+    # outset is skipped and the road is drawn at its true width.
+    visual_outset = 0.0 if args.raceline else VISUAL_OUTSET_M
     outer_visual = smooth_resample_loop(outer_raw, N_VISUAL_POINTS, VISUAL_SMOOTH_S)
     inner_visual = smooth_resample_loop(inner_raw, N_VISUAL_POINTS, VISUAL_SMOOTH_S)
     outer_visual, inner_visual = align_loops(outer_visual, inner_visual)
-    outer_visual = offset_loop_outward(outer_visual, VISUAL_OUTSET_M, is_outer=True)
-    inner_visual = offset_loop_outward(inner_visual, VISUAL_OUTSET_M, is_outer=False)
+    if visual_outset > 0.0:
+        outer_visual = offset_loop_outward(outer_visual, visual_outset, is_outer=True)
+        inner_visual = offset_loop_outward(inner_visual, visual_outset, is_outer=False)
 
     # Kerbs at corners on both edges — solid white trapezoids OUTSIDE the road.
     outer_kerbs = compute_kerb_polygons(outer_visual, is_outer=True)

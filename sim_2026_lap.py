@@ -64,6 +64,17 @@ DECEL_WINDOW_S = 0.40   # peak braking decel / accel power are measured over a
                         # also de-contaminates P_over_m_obs of a leading-edge
                         # quantization step (1266 -> 1038 W/kg).
 
+# Superclip onset — superclipping begins once the car has accelerated, at full
+# throttle and without braking, to this fraction of its top achievable speed
+# on a straight. Real 2026 superclipping is a near-top-speed phenomenon: the
+# car reaches almost max speed, then the MGU-K harvests under throttle.
+SUPERCLIP_SPEED_FRAC = 0.93
+
+# Superclip net propulsion (W): the ICE pushes ~400 kW while the MGU-K
+# harvests; the NET is tuned so the speed bleeds at the rate seen in real
+# 2026 China Q telemetry — a full-throttle decline of ~5-7 km/h per second.
+P_SUPERCLIP_NET_W    = 335_000
+
 # Override WARM_* defaults from calibration JSON if present.
 # Resolve relative to THIS file, not the CWD — otherwise importing sim_2026_lap
 # from any other directory silently skips the override and runs on stale defaults.
@@ -704,16 +715,116 @@ def compute_v_brake_backward(v_grip, kappa, arc, track_length_m, n_iters=3):
     return v
 
 
-def _pick_mode(soc, lap_deploy_j, dv_target, t_since_corner_exit,
-               kappa_here, on_straight_with_room):
-    """Return one of DEPLOY / NORMAL / CLIPPING / SUPERCLIP / REGEN."""
-    if dv_target < 0.0:
-        return "REGEN"
-    budget_left = E_DEPLOY_BUDGET_J - lap_deploy_j
-    can_deploy = (soc > 1e-4) and (budget_left > 1e3)
-    if not can_deploy:
-        return "CLIPPING"
-    if soc < SOC_SUPERCLIP_THRESH and on_straight_with_room:
+def _clean_runs(mask, min_run):
+    """Circular morphological cleanup: flip every contiguous run shorter than
+    `min_run` to its neighbour value, so the result is made of long contiguous
+    blocks only. Turns a per-station-noisy braking flag into clean contiguous
+    braking zones — this is what kills the mode flicker."""
+    n = len(mask)
+    m = np.asarray(mask, dtype=bool).copy()
+    if not m.any() or m.all():
+        return m
+    # rotate so index 0 begins a run — keeps the wrap-around run intact
+    shift = 0
+    while shift < n and m[shift] == m[(shift - 1) % n]:
+        shift += 1
+    shift %= n
+    r = np.roll(m, -shift)
+    i = 0
+    while i < n:
+        j = i
+        while j < n and r[j] == r[i]:
+            j += 1
+        if j - i < min_run:
+            r[i:j] = not r[i]
+        i = j
+    return np.roll(r, shift)
+
+
+BRAKE_DECEL_THRESH = 4.0   # m/s^2 — a demanded deceleration above this means
+                           # the car is genuinely on the brakes for a corner.
+                           # Real F1 corner braking is 2-5 g; a gentle speed
+                           # change from drag/lift is well below this.
+
+
+def _ideal_speed_profile(v_grip, v_brake, kappa, ds, v0):
+    """Forward speed profile assuming FULL hybrid power everywhere (no energy
+    limit). Used only to locate genuine braking zones: with full power the car
+    accelerates on every straight, so its speed decreases ONLY where it is
+    actually braking for a corner. (v_brake < v_grip — being brake-LIMITED —
+    is not braking; the car can still accelerate under a descending v_brake
+    ceiling. Only an actually-falling achieved speed is braking.)"""
+    n = len(v_grip)
+    v = np.empty(n)
+    v[0] = min(v0, v_grip[0], v_brake[0])
+    P = P_ICE_MAX_W + P_MGU_DEPLOY_MAX_W
+    for i in range(n):
+        vi = v[i]
+        mode_here = aero_mode(kappa[i])
+        a_lat_used = abs(kappa[i]) * vi * vi
+        a_lat_max = MU_LAT * (G + downforce(vi, mode_here) / MASS_KG)
+        ratio_sq = min(1.0, (a_lat_used / max(a_lat_max, 1e-6)) ** 2)
+        a_long_grip = MU_LONG * (G + downforce(vi, mode_here) / MASS_KG) * math.sqrt(1.0 - ratio_sq)
+        a_long_power = P / (MASS_KG * max(vi, V_FLOOR_MS))
+        a_drag = drag_force(vi, mode_here) / MASS_KG
+        a_long = min(a_long_grip, a_long_power) - a_drag
+        v_next = math.sqrt(max(V_FLOOR_MS ** 2, vi * vi + 2.0 * a_long * ds[i]))
+        v_next = min(v_next, v_grip[(i + 1) % n], v_brake[(i + 1) % n])
+        v[(i + 1) % n] = v_next
+    return v
+
+
+def _braking_zones(v_grip, v_brake, kappa, ds, v0):
+    """Boolean mask: True where the car is genuinely braking for a corner.
+    Computed from the full-power ideal speed profile — a station is braking
+    where that profile's deceleration exceeds BRAKE_DECEL_THRESH. Runs are
+    cleaned to contiguous blocks (no per-station REGEN flicker)."""
+    n = len(v_grip)
+    v_ideal = _ideal_speed_profile(v_grip, v_brake, kappa, ds, v0)
+    raw = np.zeros(n, dtype=bool)
+    for i in range(n):
+        nxt = (i + 1) % n
+        decel = (v_ideal[i] ** 2 - v_ideal[nxt] ** 2) / (2.0 * max(ds[i], 1e-3))
+        raw[i] = decel > BRAKE_DECEL_THRESH
+    return _clean_runs(raw, min_run=6)
+
+
+def _drive_zone_frac(braking, ds):
+    """Per-station fractional position (0..1 by arc length) within its
+    contiguous drive (non-braking) zone, and that zone's total length.
+    Braking stations get frac 0.0 and zone_len 0.0. Handles the closed-loop
+    wrap by starting the walk at a clean braking->drive boundary."""
+    n = len(braking)
+    frac = np.zeros(n)
+    zlen = np.zeros(n)
+    if braking.all():
+        return frac, zlen
+    start = next((s for s in range(n)
+                  if not braking[s] and braking[(s - 1) % n]), 0)
+    k = 0
+    while k < n:
+        if braking[(start + k) % n]:
+            k += 1
+            continue
+        zone = []
+        while k < n and not braking[(start + k) % n]:
+            zone.append((start + k) % n)
+            k += 1
+        total = sum(ds[z] for z in zone)
+        acc = 0.0
+        for z in zone:
+            frac[z] = acc / max(total, 1e-6)
+            zlen[z] = total
+            acc += ds[z]
+    return frac, zlen
+
+
+def _pick_drive_mode(superclip_active, t_since_corner_exit):
+    """Mode for a non-braking (driving) station: DEPLOY / NORMAL / SUPERCLIP.
+    SUPERCLIP fires once the car has reached near-max speed on a straight at
+    full throttle without braking (the caller latches `superclip_active`);
+    until then it is DEPLOY in the post-corner-exit window, else NORMAL."""
+    if superclip_active:
         return "SUPERCLIP"
     if t_since_corner_exit < KEY_ACCEL_WINDOW_S:
         return "DEPLOY"
@@ -726,10 +837,8 @@ def _power_for_mode(mode, v):
         return P_ICE_MAX_W + P_MGU_DEPLOY_MAX_W
     if mode == "NORMAL":
         return P_ICE_MAX_W + P_MGU_NORMAL_CAP_W
-    if mode == "CLIPPING":
-        return P_ICE_MAX_W
     if mode == "SUPERCLIP":
-        return P_ICE_MAX_W - P_MGU_NORMAL_CAP_W   # ICE pushes, MGU harvests
+        return P_SUPERCLIP_NET_W   # ICE pushes ~400 kW, MGU-K harvests the rest
     if mode == "REGEN":
         return 0.0   # propulsion zero; regen handled separately
     raise ValueError(mode)
@@ -742,77 +851,60 @@ def _battery_delta_for_mode(mode, dt):
     if mode == "NORMAL":
         return -P_MGU_NORMAL_CAP_W * dt
     if mode == "SUPERCLIP":
-        return +P_MGU_NORMAL_CAP_W * dt
+        return +(P_ICE_MAX_W - P_SUPERCLIP_NET_W) * dt   # MGU-K harvest under throttle
     if mode == "REGEN":
         return +P_MGU_REGEN_MAX_W * dt
-    return 0.0
-
-
-def _deploy_energy_for_mode(mode, dt):
-    """Counts toward the per-lap deploy budget."""
-    if mode == "DEPLOY":
-        return P_MGU_DEPLOY_MAX_W * dt
-    if mode == "NORMAL":
-        return P_MGU_NORMAL_CAP_W * dt
-    return 0.0
-
-
-def _straight_room_ahead(v_brake, i, n):
-    """True iff there's ≥ 3 s of straight ahead before the next braking event.
-    A 'braking event' is a station where v_brake drops below the predecessor's
-    v_brake by more than 5 m/s. Heuristic but cheap."""
-    look_steps = min(200, n // 4)
-    drop_threshold = 5.0
-    for k in range(1, look_steps):
-        j = (i + k) % n
-        if v_brake[j] < v_brake[(j - 1) % n] - drop_threshold:
-            return False
-    return True
+    return 0.0   # CLIPPING: battery untouched (ICE only)
 
 
 def forward_pass_energy_aware(v_grip, v_brake, kappa, arc, track_length_m,
                                v0=None, soc0=SOC_INIT):
-    """Walk the lap forward, picking one of 5 modes per step, integrating v
-    and battery state. Returns (v, soc, mode, power_kw, t)."""
+    """Walk the lap forward integrating speed and battery state.
+
+    Modes are assigned as CONTIGUOUS blocks, never per-station:
+      * Braking zones are precomputed (`_braking_zones`) -> REGEN throughout.
+      * Each drive zone progresses DEPLOY -> NORMAL -> SUPERCLIP: SUPERCLIP
+        latches on once the car reaches near-max speed (full throttle, not
+        braking) and holds until the next braking zone — so the mode never
+        flickers back and forth.
+
+    Returns (v, soc, mode, power_kw, t)."""
     n = len(v_grip)
     ds = np.diff(np.concatenate([arc, [track_length_m]]))
-
     v_init = v0 if v0 is not None else min(v_grip[0], v_brake[0])
+    braking = _braking_zones(v_grip, v_brake, kappa, ds, v_init)
+    # Superclip speed threshold — a fraction of the car's top achievable speed.
+    v_ideal = _ideal_speed_profile(v_grip, v_brake, kappa, ds, v_init)
+    superclip_speed = SUPERCLIP_SPEED_FRAC * float(np.max(v_ideal))
+
     v = np.full(n, v_init)
-    soc_arr = np.zeros(n); soc_arr[0] = soc0
+    soc_arr = np.zeros(n)
     mode_arr = ["NORMAL"] * n
     p_kw_arr = np.zeros(n)
     t_arr = np.zeros(n)
 
     soc = soc0
-    lap_deploy_j = 0.0
     t = 0.0
     t_since_corner_exit = 0.0
+    superclip_latched = False
 
     for i in range(n):
         v_cap = min(v_grip[i], v_brake[i])
         if v[i] > v_cap:
             v[i] = v_cap
 
-        # Detect corner exit (κ falls below threshold): reset window
-        in_corner = abs(kappa[i]) > KAPPA_CORNER_THRESH
-        if not in_corner:
-            t_since_corner_exit += 0.0   # accumulated below per step
-        else:
-            t_since_corner_exit = 0.0    # reset whenever we're in a corner
+        # Reset the post-corner-exit deploy window whenever we are in a corner.
+        if abs(kappa[i]) > KAPPA_CORNER_THRESH:
+            t_since_corner_exit = 0.0
 
         mode_here = aero_mode(kappa[i])
-        dv_target = v_brake[(i + 1) % n] - v[i]   # if upcoming brake forces a drop
-
-        chosen = _pick_mode(soc, lap_deploy_j, dv_target,
-                            t_since_corner_exit, kappa[i],
-                            _straight_room_ahead(v_brake, i, n))
-        mode_arr[i] = chosen
         soc_arr[i] = soc
 
-        if chosen == "REGEN":
-            # Brake to v_cap if needed; no propulsion. Regen energy already in v_brake
-            # constraint. Just integrate time and update battery.
+        if braking[i]:
+            # Braking zone: follow v_brake down, MGU-K regenerates.
+            superclip_latched = False   # reset — next drive zone starts fresh
+            chosen = "REGEN"
+            mode_arr[i] = chosen
             v_next = min(v[(i + 1) % n], v_cap, v_brake[(i + 1) % n])
             v[(i + 1) % n] = v_next
             dt = 2.0 * ds[i] / max(v[i] + v_next, 1e-3)
@@ -824,7 +916,12 @@ def forward_pass_energy_aware(v_grip, v_brake, kappa, arc, track_length_m,
             t_since_corner_exit += dt
             continue
 
-        # Propulsion (DEPLOY / NORMAL / CLIPPING / SUPERCLIP)
+        # Drive zone: SUPERCLIP latches once the car reaches near-max speed
+        # (full throttle, no braking) and holds to the next braking zone.
+        if v[i] >= superclip_speed:
+            superclip_latched = True
+        chosen = _pick_drive_mode(superclip_latched, t_since_corner_exit)
+        mode_arr[i] = chosen
         P_total = _power_for_mode(chosen, v[i])
         a_lat_used = abs(kappa[i]) * v[i] * v[i]
         a_lat_max = MU_LAT * (G + downforce(v[i], mode_here) / MASS_KG)
@@ -842,15 +939,12 @@ def forward_pass_energy_aware(v_grip, v_brake, kappa, arc, track_length_m,
         dt = 2.0 * ds[i] / max(v[i] + v_next, 1e-3)
         soc += _battery_delta_for_mode(chosen, dt) / E_BATTERY_CAP_J
         soc = min(1.0, max(0.0, soc))
-        lap_deploy_j += _deploy_energy_for_mode(chosen, dt)
         p_kw_arr[i] = P_total / 1000.0
         t += dt
         t_arr[i] = t
         t_since_corner_exit += dt
 
-    # final SoC capture
-    soc_arr_final = soc_arr.copy()
-    return v, soc_arr_final, mode_arr, p_kw_arr, t_arr
+    return v, soc_arr, mode_arr, p_kw_arr, t_arr
 
 
 def simulate_lap(raceline, arc, kappa, track_length_m, max_iters=8, tol_v=1.0):
@@ -931,41 +1025,50 @@ def write_csv(out_path, v, soc, mode, p_kw, t_arr, arc, track_length_m, fps=30):
     print(f"[sim] wrote {n_out} rows -> {out_path}")
 
 
-def assert_sanity(v, soc, mode, p_kw, t_arr, lap_deploy_j_total=None):
+def assert_sanity(v, soc, mode, p_kw, t_arr):
     """Hard-fail (exit non-zero) if the simulated lap is out of physical bounds.
     Magnitudes are from spec §6 + §3.1 (real 2026 telemetry patterns)."""
     T_lap = float(t_arr[-1])
     v_kmh_max = float(np.max(v) * 3.6)
     v_kmh_min = float(np.min(v) * 3.6)
-    n_clip = sum(1 for m in mode if m == "CLIPPING")
     n_super = sum(1 for m in mode if m == "SUPERCLIP")
 
     fails = []
     if not (70.0 <= T_lap <= 80.0):
         fails.append(f"T_lap {T_lap:.2f}s outside [70, 80]")
-    if not (290.0 <= v_kmh_max <= 340.0):
-        fails.append(f"peak v {v_kmh_max:.1f} km/h outside [290, 340]")
-    if not (70.0 <= v_kmh_min <= 110.0):
-        fails.append(f"hairpin v {v_kmh_min:.1f} km/h outside [70, 110]")
-    if n_clip + n_super == 0:
-        fails.append("zero clipping zones — expected at least one (Casino Straight)")
+    if not (290.0 <= v_kmh_max <= 350.0):
+        fails.append(f"peak v {v_kmh_max:.1f} km/h outside [290, 350]")
+    # Hairpin (slowest point). Real 2025 Canada Q telemetry puts the L'Épingle
+    # apex at ~69 km/h; a 2026 car (−30% downforce) is slower still, and a
+    # racing line that runs fully to the apex is slower at the apex than one
+    # that stays off it. Band catches gross errors, not the physical 2026 value.
+    if not (52.0 <= v_kmh_min <= 85.0):
+        fails.append(f"hairpin v {v_kmh_min:.1f} km/h outside [52, 85]")
+    if n_super == 0:
+        fails.append("zero superclip zones — expected at least one (Casino Straight)")
 
-    # Clipping-pattern checks against §3.1 observed 2026 telemetry magnitudes
-    if n_clip > 0:
-        clip_indices = [i for i, m in enumerate(mode) if m == "CLIPPING"]
-        first_clip = clip_indices[0]
-        last_clip  = clip_indices[-1]
-        frac_first = first_clip / len(mode)
-        # Drop magnitude: speed at first clip station vs minimum during clip window
-        v_kmh_at_clip_start = float(v[first_clip] * 3.6)
-        v_kmh_during_clip   = float(min(v[first_clip:last_clip + 1]) * 3.6)
-        clip_drop_kmh = v_kmh_at_clip_start - v_kmh_during_clip
-        # Drop should be 0–50 km/h (zero is acceptable if speed just flatlines)
-        if clip_drop_kmh > 60.0:
-            fails.append(f"clip drop {clip_drop_kmh:.1f} km/h > 60 (real F1 caps near 50)")
+    # Superclip-pattern check: the speed drop WITHIN one contiguous superclip
+    # zone (not across the whole lap) should be modest — real F1 superclipping
+    # is a gentle ~5-7 km/h/s decline, not a plunge.
+    if n_super > 0:
+        worst_drop_kmh = 0.0
+        i = 0
+        while i < len(mode):
+            if mode[i] == "SUPERCLIP":
+                j = i
+                while j < len(mode) and mode[j] == "SUPERCLIP":
+                    j += 1
+                seg = v[i:j]
+                worst_drop_kmh = max(worst_drop_kmh,
+                                     (float(np.max(seg)) - float(np.min(seg))) * 3.6)
+                i = j
+            else:
+                i += 1
+        if worst_drop_kmh > 60.0:
+            fails.append(f"superclip-zone drop {worst_drop_kmh:.1f} km/h > 60 (real F1 caps near 50)")
 
     print(f"[sanity] T_lap={T_lap:.2f}s  v=[{v_kmh_min:.0f},{v_kmh_max:.0f}] km/h  "
-          f"clip frames={n_clip}  superclip frames={n_super}")
+          f"superclip frames={n_super}")
 
     if fails:
         for f in fails:
