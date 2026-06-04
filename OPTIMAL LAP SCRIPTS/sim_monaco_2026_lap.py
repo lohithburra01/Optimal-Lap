@@ -68,6 +68,13 @@ KAPPA_CORNER_THRESH = 0.005     # |κ| > this → a corner (for diagnostics)
 V_FLOOR_MS          = 5.0       # never let v drop below this in numerics
 SOC_INIT            = 1.0
 BRAKE_DECEL_THRESH  = 4.0       # m/s² demanded decel above this = genuine braking
+# KAPPA_MEDIAN_SIZE — light median filter on κ before deriving v_grip, to reject
+#   single-station refinement-QP spikes at the apex. Monaco uses 3 (NOT Canada's
+#   5): the Fairmont hairpin is a GENUINELY sharp ~8 m-radius corner, and a
+#   size-5 window (≈10 m) over-smooths it, lifting the apex from a realistic
+#   ~46 km/h to ~59 km/h. Size 3 preserves the real corner while still killing
+#   isolated 1-station spikes (raw |κ|max≈0.18 → 0.12, R 5.5→8.3 m).
+KAPPA_MEDIAN_SIZE   = 3
 
 
 # ── Aero & grip primitives (single locked config — no `mode` argument) ──
@@ -257,25 +264,40 @@ def forward_pass(v_grip, v_brake, kappa, arc, track_length_m,
             t_arr[i] = t
             continue
 
-        # Drive station: deploy MGU-K up to the speed cap (overtake or Rev1).
+        # Drive station: deploy MGU-K up to the speed cap (overtake or Rev1) —
+        # but only DEBIT the battery for the power the tyres actually accept.
+        # Most of Monaco is slow-corner exits where the car is grip/traction-
+        # limited: the ICE's 400 kW already exceeds what the tyres can put down,
+        # so the MGU-K delivers little or nothing. Debiting the full cap there
+        # (the old bug) drained the battery ~4 MJ/lap and forced spurious
+        # clipping; in reality Monaco over-harvests precisely because deploy is
+        # grip-limited at low speed. MGU-K energy actually used = the propulsive
+        # power above the ICE that the grip limit allows, capped by Rev1.
         cap = mgu_k_cap_w(v[i], overtake_mask[i])
-        mgu = cap if soc > 0.0 else 0.0
-        mode_arr[i] = "CLIPPING" if (soc <= 0.0 and cap > 0.0) else "DEPLOY"
-        P_total = P_ICE_MAX_W + mgu
+        mgu_avail = cap if soc > 0.0 else 0.0
+        P_avail = P_ICE_MAX_W + mgu_avail
 
         a_lat_used = abs(kappa[i]) * v[i] * v[i]
         a_lat_max = MU_LAT * (G + downforce(v[i]) / MASS_KG)
         ratio_sq = min(1.0, (a_lat_used / max(a_lat_max, 1e-6)) ** 2)
         a_long_grip = MU_LONG * (G + downforce(v[i]) / MASS_KG) * math.sqrt(1.0 - ratio_sq)
-        a_long_power = P_total / (MASS_KG * max(v[i], V_FLOOR_MS))
+        a_long_power = P_avail / (MASS_KG * max(v[i], V_FLOOR_MS))
         a_long = min(a_long_grip, a_long_power) - drag_force(v[i]) / MASS_KG
+
+        # Propulsive power the grip limit accepts vs what's available.
+        P_grip = MASS_KG * a_long_grip * max(v[i], V_FLOOR_MS)
+        P_used = min(P_grip, P_avail)
+        mgu = max(0.0, min(cap, P_used - P_ICE_MAX_W))   # MGU fills only above ICE
+        # CLIPPING fires only if the battery is empty AND the car is genuinely
+        # power-starved (grip wants more than the ICE alone can give).
+        mode_arr[i] = "CLIPPING" if (soc <= 0.0 and cap > 0.0 and P_grip > P_ICE_MAX_W) else "DEPLOY"
 
         v_next = math.sqrt(max(V_FLOOR_MS ** 2, v[i] * v[i] + 2.0 * a_long * ds[i]))
         v_next = min(v_next, v_grip[(i + 1) % n], v_brake[(i + 1) % n])
         v[(i + 1) % n] = v_next
         dt = 2.0 * ds[i] / max(v[i] + v_next, 1e-3)
         soc = min(1.0, max(0.0, soc - mgu * dt / E_BATTERY_CAP_J))
-        p_kw_arr[i] = P_total / 1000.0
+        p_kw_arr[i] = P_used / 1000.0
         mgu_kw_arr[i] = mgu / 1000.0
         t += dt
         t_arr[i] = t
@@ -291,12 +313,14 @@ def simulate_lap(raceline, arc, kappa, track_length_m, max_iters=8, tol_v=1.0):
     # The raceline κ is a noisy 3-point Menger estimate with a spike at the
     # hairpin apex; a light 5-point median rejects the spike for v_grip while
     # the raw κ (written to json) is untouched. mode='wrap' for the closed loop.
-    kappa_smooth = median_filter(np.asarray(kappa, dtype=float), size=5, mode="wrap")
+    kappa_smooth = median_filter(np.asarray(kappa, dtype=float),
+                                 size=KAPPA_MEDIAN_SIZE, mode="wrap")
     v_grip = np.array([v_grip_static(k) for k in kappa_smooth])
     ds = np.diff(np.concatenate([arc, [track_length_m]]))
 
     v0 = 50.0
     result = None
+    ot_mask = np.zeros(len(kappa), dtype=bool)
     for it in range(max_iters):
         v_brake = compute_v_brake_backward(v_grip, kappa, arc, track_length_m)
         braking = _braking_zones(v_grip, v_brake, kappa, ds, v0)
@@ -313,7 +337,9 @@ def simulate_lap(raceline, arc, kappa, track_length_m, max_iters=8, tol_v=1.0):
             print(f"  closure converged at iter {it}")
             break
         v0 = 0.5 * (v[0] + v[-1])
-    return result
+    # Return the overtake mask actually used, so the sanity check verifies the
+    # exact same deployment caps the forward pass applied (no recomputation drift).
+    return (*result, ot_mask)
 
 
 # ── Sanity assertions ──
@@ -394,14 +420,8 @@ def main():
         }, f)
     print(f"[monaco] wrote raceline -> {args.raceline_out}")
 
-    v, soc, mode, p_kw, mgu_kw, t_arr = simulate_lap(raceline, arc, kappa, total_len)
-
-    # Recompute the overtake mask on the final profile for the sanity check.
-    ds = np.diff(np.concatenate([arc, [total_len]]))
-    vg = np.array([v_grip_static(k) for k in kappa])
-    vb = compute_v_brake_backward(vg, kappa, arc, total_len)
-    braking = _braking_zones(vg, vb, kappa, ds, v[0])
-    ot_mask = _overtake_zone_mask(v, braking)
+    v, soc, mode, p_kw, mgu_kw, t_arr, ot_mask = simulate_lap(
+        raceline, arc, kappa, total_len)
 
     write_csv(args.csv_out, v, soc, mode, p_kw, t_arr, arc, total_len, fps=30)
     assert_sanity(v, soc, mode, p_kw, mgu_kw, t_arr, ot_mask)
