@@ -13,7 +13,7 @@ if not exist "%PYTHON%" goto :err_py
 if not exist "%SVG%"    goto :err_svg
 
 echo === Stage 1: SVG -^> outline (Monaco 3337 m, 9.0 m wide) ===
-"%PYTHON%" "%ROOT%svg_to_outline.py" --svg "%SVG%" --out "%OUTLINE%" --track-length 3337 --road-width 9.0
+"%PYTHON%" "%ROOT%svg_to_outline.py" --svg "%SVG%" --out "%OUTLINE%" --track-length 3337 --road-width 9.0 --min-corner-radius 7.5
 if errorlevel 1 goto :err
 
 echo === Stage 2: raceline + Monaco 2026 physics sim (Rev1 + locked Z-mode) ===

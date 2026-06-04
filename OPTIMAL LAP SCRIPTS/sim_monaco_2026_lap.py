@@ -44,11 +44,17 @@ RHO     = 1.225
 # ── Aero — single locked Z-mode (max downforce, wings closed, high drag) ──
 # Monaco runs active aero DISABLED for the whole lap (no straight-mode zones on
 # the FIA track map; fails the 3-second minimum straight-mode duration). So
-# there is ONE config everywhere: a max-downforce Monaco wing with the −30%
-# 2026 downforce reduction already baked in. CDA is the high (closed-wing) value
-# all lap. Tuned so the tunnel/main-straight peak lands ~290–300 km/h.
-CL_MONACO  = 3.00      # effective Cl·A
-CDA_MONACO = 1.85      # effective Cd·A
+# there is ONE config everywhere: Monaco's MAXIMUM-downforce package (the
+# biggest wing of the season) with the −30% 2026 reduction baked in. CDA is the
+# high (closed-wing) value all lap.
+# CL_MONACO = 3.50: a 2025 max-DF Monaco package is Cl·A ≈ 4.8–5.0; −30% → ~3.4–3.5.
+#   Calibrated to the high-but-defensible end so corner speeds match a real
+#   high-downforce car: peak lateral ≈ 4.8 g, 99th-pct ≈ 3.8 g (consistent with
+#   F1 cornering), Fairmont hairpin apex ≈ 48 km/h (real ~48), lap ≈ 1:13.0
+#   (2025 pole 1:10.3 + the ~2–3 s 2026 slowdown). The earlier 3.00 gave a
+#   ~1:15.8 lap that was too slow vs every real-telemetry reference.
+CL_MONACO  = 3.50      # effective Cl·A
+CDA_MONACO = 1.85      # effective Cd·A — tuned so the tunnel peak lands ~283 km/h
 
 # ── Power ──
 P_ICE_MAX_W       = 400_000     # 400 kW combustion (2026 PU)
@@ -57,11 +63,17 @@ E_BATTERY_CAP_J   = 4_000_000   # ~4 MJ usable store
 
 # ── Tyre grip ──
 # MU_LONG: braking decel = MU_LONG·(g + downforce/m) + drag/m, so downforce and
-#   drag are added separately — MU_LONG is the pure-tyre coefficient (~5 g peak).
-# MU_LAT: tuned so the Fairmont hairpin (slowest corner in F1, ~48 km/h) lands
-#   in band. At ~13 m/s downforce is negligible, so MU_LAT carries the apex.
+#   drag are added separately — MU_LONG is the pure-tyre coefficient. Verified
+#   against real telemetry: binned by speed, this sim's braking matches/exceeds
+#   real 2025 Canada + Miami decel in Monaco's 60–180 km/h operating range
+#   (e.g. 1.9 g vs 1.5 g real at 100–140 km/h), so braking is NOT the limiter.
+# MU_LAT = 2.10: effective lateral grip with Monaco's max-downforce package.
+#   Cornering speed (not the accel/brake rates) was the lap-time limiter — the
+#   sim's accel envelope already runs ~30 % stronger than real, so the slow lap
+#   came from low apex speeds. 2.10 puts peak lateral at ~4.8 g (real F1 range)
+#   and the Fairmont apex at ~48 km/h, giving a believable ~1:13.0 lap.
 MU_LONG = 1.60
-MU_LAT  = 1.95
+MU_LAT  = 2.10
 
 # ── Mode-switching / numerics ──
 KAPPA_CORNER_THRESH = 0.005     # |κ| > this → a corner (for diagnostics)

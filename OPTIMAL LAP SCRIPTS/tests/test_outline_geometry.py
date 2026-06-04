@@ -9,13 +9,33 @@ from svg_to_outline import (
     scale_to_length,
     recentre,
 )
-from svg_to_outline import build_outline_from_svg
+from svg_to_outline import build_outline_from_svg, limit_min_radius, compute_curvature
 from svg_to_outline import compute_left_normals, generate_edges_constant_width
 from svg_to_outline import (
     compute_curvature,
     apply_hairpin_narrowing,
     find_start_finish_index,
 )
+
+
+def test_limit_min_radius_rounds_tight_corner():
+    # A loop with one pathologically tight spike. The limiter must round it up to
+    # the requested minimum radius (cap |kappa| at 1/R), leaving the rest alone.
+    th = np.linspace(0, 2 * math.pi, 400, endpoint=False)
+    pts = np.column_stack([50 * np.cos(th), 50 * np.sin(th)])  # R=50 circle
+    pts[100] += pts[100] / np.linalg.norm(pts[100]) * 8.0       # yank one node out → sharp spike
+    k_before = np.abs(compute_curvature(pts)).max()
+    fixed = limit_min_radius(pts, min_radius_m=10.0)
+    k_after = np.abs(compute_curvature(fixed)).max()
+    assert k_before > 1.0 / 10.0, "test setup: spike should exceed the cap"
+    assert k_after <= 1.0 / 10.0 + 0.02, f"|kappa|max {k_after:.3f} not rounded to <=0.1"
+
+
+def test_limit_min_radius_disabled_is_noop():
+    th = np.linspace(0, 2 * math.pi, 200, endpoint=False)
+    pts = np.column_stack([np.cos(th), np.sin(th)])
+    out = limit_min_radius(pts, min_radius_m=0.0)
+    assert np.allclose(out, pts), "min_radius<=0 must return the input unchanged"
 
 
 def test_track_length_override_scales_perimeter():

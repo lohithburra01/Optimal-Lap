@@ -258,6 +258,40 @@ def compute_left_normals(pts):
     return np.column_stack([-tang[:, 1], tang[:, 0]])
 
 
+def limit_min_radius(centerline, min_radius_m, max_iters=600):
+    """Round any pathologically tight corner up to `min_radius_m` by selectively
+    Laplacian-smoothing only the stations whose curvature exceeds 1/min_radius_m.
+
+    Why this exists: a hand-drawn SVG centreline can contain an apex far tighter
+    than any real track — the Monaco SVG's hairpin is a ~3 m-radius point. You
+    cannot wrap a road of half-width h around a centreline of radius R < h: the
+    inner edge (centre − h·n) folds inside-out into a cusp, wrecking the corridor
+    and the racing line built on it. Real circuits have no centreline radius
+    below ~6–8 m (the Fairmont hairpin is ~7 m). This limiter repairs the
+    drawing defect — it touches ONLY the offending stations (a no-op everywhere
+    |κ| ≤ 1/min_radius_m, hence a no-op on wide tracks like Canada) and rounds
+    them to a buildable, physically-real radius while preserving lap length.
+
+    min_radius_m <= 0 disables it (returns the input unchanged)."""
+    if min_radius_m <= 0.0:
+        return centerline
+    cl = np.asarray(centerline, dtype=float).copy()
+    n = len(cl)
+    k_target = 1.0 / min_radius_m
+    idx = np.arange(n)
+    prev = (idx - 1) % n
+    nxt = (idx + 1) % n
+    for _ in range(max_iters):
+        kappa = np.abs(compute_curvature(cl))
+        mask = kappa > k_target
+        if not mask.any():
+            break
+        # Laplacian (Taubin-style) smoothing applied only at the too-tight points
+        smoothed = 0.25 * cl[prev] + 0.5 * cl + 0.25 * cl[nxt]
+        cl[mask] = smoothed[mask]
+    return cl
+
+
 def generate_edges_constant_width(centerline, width_m):
     """Offset the centerline by ±W/2 along the left-normal to get outer/inner.
 
@@ -341,11 +375,13 @@ def find_start_finish_index(kappa, low_thresh=SF_LINE_KAPPA_THRESH):
 # === Main entry point ===================================================
 
 def build_outline_from_svg(svg_path, track_length_m=TRACK_LENGTH_M,
-                           road_width_m=ROAD_WIDTH_M):
+                           road_width_m=ROAD_WIDTH_M, min_corner_radius_m=0.0):
     """End-to-end: SVG file path → (outer, inner) np arrays in metres.
 
     track_length_m / road_width_m default to the Canada values so existing
-    callers are unaffected; Monaco passes 3337.0 / 9.0."""
+    callers are unaffected; Monaco passes 3337.0 / 9.0. min_corner_radius_m > 0
+    rounds pathologically tight hand-drawn corners up to a buildable radius
+    (Monaco's hairpin); 0 (default) disables it, leaving Canada/Miami unchanged."""
     with open(svg_path, encoding="utf-8") as f:
         text = f.read()
     m = re.search(r'(?:^|\s)d\s*=\s*"([^"]+)"', text)
@@ -374,6 +410,19 @@ def build_outline_from_svg(svg_path, track_length_m=TRACK_LENGTH_M,
     if signed_area(centerline) < 0.0:
         centerline = centerline[::-1].copy()
         print("[svg_to_outline] centerline was CW; reversed to CCW")
+
+    # Repair pathologically tight hand-drawn corners (e.g. the Monaco hairpin,
+    # drawn at ~3 m radius — too tight to wrap a road around without the inner
+    # edge folding). No-op when min_corner_radius_m <= 0 (Canada/Miami).
+    if min_corner_radius_m > 0.0:
+        before = float(np.abs(compute_curvature(centerline)).max())
+        centerline = limit_min_radius(centerline, min_corner_radius_m)
+        # Re-uniform arc spacing (s=0: interpolate through the rounded points,
+        # don't re-sharpen them).
+        centerline = smooth_resample_loop(centerline, N_OUTPUT_POINTS, smooth_s=0.0)
+        after = float(np.abs(compute_curvature(centerline)).max())
+        print(f"[svg_to_outline] min-radius limiter R>={min_corner_radius_m}m: "
+              f"|kappa|max {before:.3f} -> {after:.3f}")
 
     # Per-station widths: constant base, narrow at hairpin (highest |κ| peak)
     kappa = compute_curvature(centerline)
@@ -406,9 +455,13 @@ def main():
                     help=f"Real track length in metres (default {TRACK_LENGTH_M} = Canada)")
     ap.add_argument("--road-width", type=float, default=ROAD_WIDTH_M,
                     help=f"Road width in metres (default {ROAD_WIDTH_M} = Canada; Monaco ~9.0)")
+    ap.add_argument("--min-corner-radius", type=float, default=0.0,
+                    help="Round hand-drawn corners tighter than this radius (m) up to it. "
+                         "0 = off (default; Canada/Miami). Monaco ~7.5 to fix the over-tight hairpin.")
     args = ap.parse_args()
 
-    outer, inner = build_outline_from_svg(args.svg, args.track_length, args.road_width)
+    outer, inner = build_outline_from_svg(args.svg, args.track_length, args.road_width,
+                                          args.min_corner_radius)
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     payload = {
