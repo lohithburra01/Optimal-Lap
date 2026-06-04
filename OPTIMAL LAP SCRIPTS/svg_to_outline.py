@@ -18,6 +18,11 @@ from scipy.interpolate import splprep, splev
 TRACK_LENGTH_M          = 4361.0
 ROAD_WIDTH_M            = 13.0
 HAIRPIN_NARROW_M        = 10.5
+HAIRPIN_NARROW_RATIO    = HAIRPIN_NARROW_M / ROAD_WIDTH_M   # 0.8077 — keep hairpin
+                                                           # narrowing proportional
+                                                           # to road width so a
+                                                           # narrower track (Monaco)
+                                                           # narrows sensibly too.
 HAIRPIN_HALF_RANGE_M    = 60.0
 N_OUTPUT_POINTS         = 2000
 BEZIER_SAMPLES_PER_SEG  = 40
@@ -33,18 +38,19 @@ _NUM_RE = re.compile(r"[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?")
 # How many coordinate pairs each command consumes per "instance"
 _PAIRS_PER_CMD = {
     "M": 1, "L": 1, "T": 1,
-    "H": 0, "V": 0,           # special: single number, not pair (not used by Inkscape export here)
+    "H": 0, "V": 0,           # special: single number, not pair (Monaco export uses H/h)
     "C": 3,
     "S": 2, "Q": 2,
-    "A": 0,                   # arc — not handled (Inkscape Canada export uses only M/m, C/c, Z/z)
+    "A": 0,                   # arc — not handled (Inkscape exports here use no arcs)
     "Z": 0,
 }
 
 
 def parse_svg_path_d(d_str):
     """Tokenise an SVG path `d` attribute into a list of (CMD, [(x,y), ...]) tuples
-    with all coordinates expanded to absolute. Supports M/m, L/l, C/c, Z/z —
-    which is all the Canada Inkscape export uses.
+    with all coordinates expanded to absolute. Supports M/m, L/l, H/h, V/v, C/c,
+    Z/z. (Canada uses M/C/Z; Monaco additionally uses H/h and L/l.) Horizontal
+    (H/h) and vertical (V/v) linetos are normalised to absolute L segments.
 
     NOTE for callers extracting `d=` from raw SVG text via regex: use the pattern
     r'(?:^|\\s)d\\s*=\\s*"([^"]+)"' (d preceded by whitespace or start-of-string),
@@ -52,7 +58,7 @@ def parse_svg_path_d(d_str):
     `d="..."` inside Inkscape id attributes (e.g. id="svg3151") before it ever
     reaches the actual <path d="..."> attribute.
     """
-    tokens = re.findall(r"[MmLlCcZz]|" + _NUM_RE.pattern, d_str)
+    tokens = re.findall(r"[MmLlHhVvCcZz]|" + _NUM_RE.pattern, d_str)
 
     out = []
     cx, cy = 0.0, 0.0          # current point
@@ -61,7 +67,7 @@ def parse_svg_path_d(d_str):
     last_cmd = None
     while i < len(tokens):
         tok = tokens[i]
-        if tok in "MmLlCcZz":
+        if tok in "MmLlHhVvCcZz":
             cmd = tok
             i += 1
         else:
@@ -84,6 +90,20 @@ def parse_svg_path_d(d_str):
         if upper == "Z":
             out.append(("Z", []))
             cx, cy = sx, sy
+            last_cmd = cmd
+            continue
+
+        if upper in ("H", "V"):
+            # Single-coordinate lineto → synthesise the (x,y) pair and emit as L.
+            val = float(tokens[i]); i += 1
+            if upper == "H":
+                x = val + cx if rel else val
+                y = cy
+            else:                          # V
+                x = cx
+                y = val + cy if rel else val
+            cx, cy = x, y
+            out.append(("L", [(x, y)]))
             last_cmd = cmd
             continue
 
@@ -320,8 +340,12 @@ def find_start_finish_index(kappa, low_thresh=SF_LINE_KAPPA_THRESH):
 
 # === Main entry point ===================================================
 
-def build_outline_from_svg(svg_path):
-    """End-to-end: SVG file path → (outer, inner) np arrays in metres."""
+def build_outline_from_svg(svg_path, track_length_m=TRACK_LENGTH_M,
+                           road_width_m=ROAD_WIDTH_M):
+    """End-to-end: SVG file path → (outer, inner) np arrays in metres.
+
+    track_length_m / road_width_m default to the Canada values so existing
+    callers are unaffected; Monaco passes 3337.0 / 9.0."""
     with open(svg_path, encoding="utf-8") as f:
         text = f.read()
     m = re.search(r'(?:^|\s)d\s*=\s*"([^"]+)"', text)
@@ -334,7 +358,7 @@ def build_outline_from_svg(svg_path):
     print(f"[svg_to_outline] raw polyline: {len(raw_poly)} points")
 
     raw_poly = y_flip(raw_poly)
-    scaled, scale = scale_to_length(raw_poly, TRACK_LENGTH_M)
+    scaled, scale = scale_to_length(raw_poly, track_length_m)
     print(f"[svg_to_outline] scale factor: {scale:.4f} m/SVG-unit")
     if not (SCALE_SANITY_MIN <= scale <= SCALE_SANITY_MAX):
         print(f"[svg_to_outline] scale {scale} outside [{SCALE_SANITY_MIN},"
@@ -353,10 +377,10 @@ def build_outline_from_svg(svg_path):
 
     # Per-station widths: constant base, narrow at hairpin (highest |κ| peak)
     kappa = compute_curvature(centerline)
-    arc_per_step = TRACK_LENGTH_M / N_OUTPUT_POINTS
-    widths = np.full(N_OUTPUT_POINTS, ROAD_WIDTH_M)
+    arc_per_step = track_length_m / N_OUTPUT_POINTS
+    widths = np.full(N_OUTPUT_POINTS, road_width_m)
     apply_hairpin_narrowing(widths, kappa, arc_per_step,
-                            HAIRPIN_HALF_RANGE_M, HAIRPIN_NARROW_M)
+                            HAIRPIN_HALF_RANGE_M, road_width_m * HAIRPIN_NARROW_RATIO)
 
     # Variable-width edges
     nrm = compute_left_normals(centerline)
@@ -378,9 +402,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--svg", required=True, help="Input SVG path (Inkscape centerline)")
     ap.add_argument("--out", required=True, help="Output outline JSON path")
+    ap.add_argument("--track-length", type=float, default=TRACK_LENGTH_M,
+                    help=f"Real track length in metres (default {TRACK_LENGTH_M} = Canada)")
+    ap.add_argument("--road-width", type=float, default=ROAD_WIDTH_M,
+                    help=f"Road width in metres (default {ROAD_WIDTH_M} = Canada; Monaco ~9.0)")
     args = ap.parse_args()
 
-    outer, inner = build_outline_from_svg(args.svg)
+    outer, inner = build_outline_from_svg(args.svg, args.track_length, args.road_width)
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     payload = {

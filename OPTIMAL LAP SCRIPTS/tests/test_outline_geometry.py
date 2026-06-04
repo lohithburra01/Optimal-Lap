@@ -1,4 +1,5 @@
 import math
+import os
 import numpy as np
 import pytest
 
@@ -8,12 +9,28 @@ from svg_to_outline import (
     scale_to_length,
     recentre,
 )
+from svg_to_outline import build_outline_from_svg
 from svg_to_outline import compute_left_normals, generate_edges_constant_width
 from svg_to_outline import (
     compute_curvature,
     apply_hairpin_narrowing,
     find_start_finish_index,
 )
+
+
+def test_track_length_override_scales_perimeter():
+    # Monaco (3337 m) must scale the outline to ~that perimeter; the default
+    # path keeps Canada's 4361 m unchanged (backward compatibility).
+    svg = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       "Circuit_Monaco.svg")
+    outer, inner = build_outline_from_svg(svg, track_length_m=3337.0, road_width_m=9.0)
+
+    def perim(p):
+        p = np.asarray(p)
+        return float(np.linalg.norm(np.diff(np.vstack([p, p[0]]), axis=0), axis=1).sum())
+
+    mid = (perim(outer) + perim(inner)) / 2.0
+    assert 3000.0 < mid < 3700.0, f"centerline perimeter {mid:.0f} m off target 3337"
 
 
 def test_left_normals_orthogonal_to_tangent():
