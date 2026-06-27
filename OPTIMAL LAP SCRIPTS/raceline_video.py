@@ -53,17 +53,24 @@ N_CORRIDOR_POINTS = 800       # IQP corridor density (heavily smoothed, INSET ap
 N_VISUAL_POINTS   = 4000      # visual edges density (lightly smoothed, NO inset → wider than IQP corridor)
 CORR_SMOOTH_S     = 30.0      # heavy smoothing for IQP corridor
 VISUAL_SMOOTH_S   = 10.0      # light smoothing for rendered edges (close to raw shape)
-INSET_M           = 1.0       # IQP-corridor inset on each side — keeps the
-                              #   racing line a clear margin in from the track
-                              #   edge (not hugging / crossing it)
-VISUAL_OUTSET_M   = 2.5       # push rendered edges outward this far → visual always wider than IQP corridor
-KAPPA_BOUND       = 0.40
-VEH_WIDTH         = 1.9
+INSET_M           = 1.0       # IQP-corridor inset on each side — line center
+                              #   stays ~1 m in from the edge, i.e. the car
+                              #   (half-width ~0.95 m) runs to the white line /
+                              #   kerb but not past it (wall-safe at Monaco).
+                              #   1.3 left it too far off the road; <1.0 puts
+                              #   the car over the line into the barrier.
+VISUAL_OUTSET_M   = 0.0       # push rendered edges outward this far → visual always wider than IQP corridor
+KAPPA_BOUND       = 0.4
+VEH_WIDTH         = 2.0
 RACELINE_STEPSIZE = 2.0
-IQP_ITERS         = 5
+IQP_ITERS         = 30
 ALPHA_TOL         = 0.10
+IQP_DAMP          = 0.5    # damp the alpha step so the iteration settles instead
+                          # of oscillating to the corridor edge and back (the
+                          # undamped full-step version never converged in 5 iters
+                          # and left phantom R~5 m kinks on near-straight track)
 SAFETY_MARGIN     = 0.15
-IQP_OUTPUT_SMOOTH = 1.0       # gaussian sigma on cur_ref before final splprep
+IQP_OUTPUT_SMOOTH = 0.8       # gaussian sigma on cur_ref before final splprep
 
 # Render
 WIDTH, HEIGHT     = 1080, 1920
@@ -423,14 +430,32 @@ def align_loops(outer, inner):
     inner = np.roll(inner, -j0, axis=0)
     return outer, inner
 
+def _pair_inner_to_outer(outer, inner):
+    """For each outer station, the NEAREST inner point.
 
-def build_centerline_and_widths(outer, inner):
-    """Index-based pairing (fast). Both loops are uniformly arc-length sampled
-    and rotationally aligned, so outer[i] / inner[i] are at matching stations
-    to within sub-meter for our densities. Centerline = midpoint, widths
-    = signed projection onto local left-normal."""
+    Replaces the old index-based pairing (outer[i] <-> inner[i]), which assumed
+    both edges advance at the same arc-length rate. That assumption fails at
+    tight corners: at a hairpin the inner edge is far shorter than the outer, so
+    uniform-arc resampling drifts the index pairing right around the corner
+    (Monaco: paired gap up to 38.7 m vs the real 9 m width). The drifted midpoint
+    then lands OUTSIDE the real track and the racing line follows it off-track.
+    Nearest-point pairing is drift-proof and leaves wide/flowing tracks (Canada)
+    tracing essentially the same centerline curve."""
+    from scipy.spatial import cKDTree
+    return inner[cKDTree(inner).query(outer)[1]]
+
+
+def build_centerline_and_widths(outer, inner, inset_m=None):
+    """Centerline = midpoint of each outer station and its NEAREST inner point;
+    widths = signed projection onto the local left-normal. (Nearest-point
+    pairing — see _pair_inner_to_outer — not the old, drift-prone index pairing.)
+
+    inset_m: per-side corridor inset in metres. None → the module default
+    INSET_M (1.0, wall-safe for street circuits like Monaco). Pass 0.0 for
+    run-off circuits where the line legitimately uses the full track + kerbs."""
+    eff_inset = INSET_M if inset_m is None else inset_m
     n = len(outer)
-    assert len(inner) == n
+    inner = _pair_inner_to_outer(outer, inner)
 
     centerline = 0.5 * (outer + inner)
 
@@ -447,11 +472,30 @@ def build_centerline_and_widths(outer, inner):
     w_left  = np.maximum(off_outer, off_inner)
     w_right = -np.minimum(off_outer, off_inner)
 
-    w_left  = np.maximum(w_left  - INSET_M, VEH_WIDTH / 2.0 + 0.5)
-    w_right = np.maximum(w_right - INSET_M, VEH_WIDTH / 2.0 + 0.5)
+    w_left  = np.maximum(w_left  - eff_inset, VEH_WIDTH / 2.0 + 0.5)
+    w_right = np.maximum(w_right - eff_inset, VEH_WIDTH / 2.0 + 0.5)
     w_left  = gaussian_filter1d(np.tile(w_left,  3), sigma=3)[n:2 * n]
     w_right = gaussian_filter1d(np.tile(w_right, 3), sigma=3)[n:2 * n]
 
+    return centerline, w_right, w_left
+
+
+def build_centerline_and_widths_noinset(outer, inner):
+    n = len(outer)
+    inner = _pair_inner_to_outer(outer, inner)
+    centerline = 0.5 * (outer + inner)
+    tang = np.zeros_like(centerline)
+    for i in range(n):
+        d = centerline[(i + 3) % n] - centerline[(i - 3) % n]
+        nm = np.linalg.norm(d)
+        tang[i] = d / nm if nm > 1e-8 else np.array([1.0, 0.0])
+    left_normal = np.column_stack([-tang[:, 1], tang[:, 0]])
+    off_outer = np.einsum('ij,ij->i', outer - centerline, left_normal)
+    off_inner = np.einsum('ij,ij->i', inner - centerline, left_normal)
+    w_left  = np.maximum(np.maximum(off_outer, off_inner), VEH_WIDTH / 2.0)
+    w_right = np.maximum(-np.minimum(off_outer, off_inner), VEH_WIDTH / 2.0)
+    w_left  = gaussian_filter1d(np.tile(w_left,  3), sigma=3)[n:2 * n]
+    w_right = gaussian_filter1d(np.tile(w_right, 3), sigma=3)[n:2 * n]
     return centerline, w_right, w_left
 
 
@@ -619,11 +663,12 @@ def run_iqp(centerline, w_right, w_left):
               f"mean|a|={np.mean(np.abs(alpha)):.3f} "
               f"({time.perf_counter() - t_it:.2f}s)")
 
-        cur_ref = cur_ref + normvec * alpha[:, None]
-        cur_wr  = np.maximum(cur_wr - alpha, VEH_WIDTH / 2.0 + SAFETY_MARGIN)
-        cur_wl  = np.maximum(cur_wl + alpha, VEH_WIDTH / 2.0 + SAFETY_MARGIN)
+        da = IQP_DAMP * alpha               # damped step — prevents oscillation
+        cur_ref = cur_ref + normvec * da[:, None]
+        cur_wr  = np.maximum(cur_wr - da, VEH_WIDTH / 2.0 + SAFETY_MARGIN)
+        cur_wl  = np.maximum(cur_wl + da, VEH_WIDTH / 2.0 + SAFETY_MARGIN)
 
-        if np.max(np.abs(alpha)) < ALPHA_TOL and it >= 1:
+        if np.max(np.abs(da)) < ALPHA_TOL and it >= 1:
             print(f"  converged at iter {it}")
             converged = True
             break
@@ -717,7 +762,10 @@ def speed_color_bgr(t):
 # =============================================================
 
 def load_font(size, prefer_bold=True):
+    repo_fonts = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fonts")
     candidates = [
+        os.path.join(repo_fonts, "Formula1-Bold_web_0.ttf.ttf") if prefer_bold else None,
+        os.path.join(repo_fonts, "Formula1-Regular_web_0.ttf.ttf"),
         r"C:\Users\91910\Downloads\Formula1\Formula1-Bold_web_0.ttf.ttf" if prefer_bold else None,
         r"C:\Users\91910\Downloads\Formula1\Formula1-Regular_web_0.ttf.ttf",
         r"C:\Windows\Fonts\arialbd.ttf" if prefer_bold else None,
@@ -750,7 +798,8 @@ def draw_mode_label(draw, cx, y, mode_str, font):
 
 def render_video(outer, inner, raceline, ver_t, ver_d, ver_v_ms, lap_time,
                  out_path, track_name, zoom, trail_frames, fps,
-                 outer_kerbs=None, inner_kerbs=None, soc=None, mode=None):
+                 outer_kerbs=None, inner_kerbs=None, soc=None, mode=None,
+                 display_lap_time=None):
     """ver_t,ver_d,ver_v_ms come from real telemetry. The dot's position at
     video time `t` is found by:  d_at_t = interp(t, ver_t, ver_d), then
     d_at_t is mapped to arc-length on `raceline` (linear scale by ratio of
@@ -913,7 +962,11 @@ def render_video(outer, inner, raceline, ver_t, ver_d, ver_v_ms, lap_time,
             idx_m = max(0, min(len(mode) - 1,
                                int(np.searchsorted(ver_t, t, side="right")) - 1))
             draw_mode_label(draw, WIDTH // 2, MODE_LABEL_Y, mode[idx_m], font_mode_label)
-        lap_str = f"LAP TIME  {int(lap_time // 60):d}:{lap_time % 60:06.3f}"
+        # The DISPLAYED lap time can be overridden (e.g. to show a realistic 2026
+        # value) independently of the animation duration, which is set by the real
+        # telemetry timing. Motion is unchanged; only the printed label differs.
+        _dlt = display_lap_time if display_lap_time is not None else lap_time
+        lap_str = f"LAP TIME  {int(_dlt // 60):d}:{_dlt % 60:06.3f}"
         draw_centered(draw, WIDTH // 2, LAP_Y, lap_str, font_sub, (180, 180, 180))
         draw_centered(draw, WIDTH // 2, WATERMARK_Y, WATERMARK_TEXT, font_wm, (150, 150, 150))
 
@@ -944,6 +997,9 @@ def main():
     ap.add_argument("--zoom", type=float, default=DEFAULT_ZOOM)
     ap.add_argument("--trail-frames", type=int, default=DEFAULT_TRAIL)
     ap.add_argument("--fps", type=int, default=DEFAULT_FPS)
+    ap.add_argument("--display-laptime", type=float, default=None,
+                    help="Override the LAP TIME label (seconds); animation timing "
+                         "is unchanged. Use to show a realistic 2026 lap time.")
     args = ap.parse_args()
 
     with open(args.outline, "r", encoding="utf-8") as f:
@@ -1001,6 +1057,17 @@ def main():
     else:
         print("[align] synthetic CSV detected — alignment skipped")
 
+    # No post-hoc corridor clamp: the min-time builder now keeps the line inside
+    # the corridor by construction (correct projection-based α-seed in
+    # sim_2026_lap.build_raceline), so stapling stray points to the edge — which
+    # only ever produced kinks — is neither needed nor wanted.
+    rl_minx, rl_maxx = raceline[:,0].min(), raceline[:,0].max()
+    rl_miny, rl_maxy = raceline[:,1].min(), raceline[:,1].max()
+    ov_minx, ov_maxx = outer_visual[:,0].min(), outer_visual[:,0].max()
+    ov_miny, ov_maxy = outer_visual[:,1].min(), outer_visual[:,1].max()
+    print(f"[diag] raceline X[{rl_minx:.0f},{rl_maxx:.0f}] Y[{rl_miny:.0f},{rl_maxy:.0f}]")
+    print(f"[diag] visual   X[{ov_minx:.0f},{ov_maxx:.0f}] Y[{ov_miny:.0f},{ov_maxy:.0f}]")
+
     track_name = args.track_name or os.path.splitext(os.path.basename(args.outline))[0]
     out_path = args.out or f"{os.path.splitext(os.path.basename(args.outline))[0]}_optimal_lap.mp4"
 
@@ -1009,7 +1076,7 @@ def main():
         ver_t, ver_d, ver_v, ver_lap,
         out_path, track_name, args.zoom, args.trail_frames, args.fps,
         outer_kerbs=outer_kerbs, inner_kerbs=inner_kerbs,
-        soc=soc, mode=mode
+        soc=soc, mode=mode, display_lap_time=args.display_laptime
     )
 
 
