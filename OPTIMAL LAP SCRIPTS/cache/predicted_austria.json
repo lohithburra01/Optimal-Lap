@@ -1,0 +1,53 @@
+{
+ "track": "austria",
+ "rho": 1.147,
+ "t25_s": 63.971,
+ "lap_band_s": [
+  64.483,
+  67.663
+ ],
+ "vtop_target_kmh": 326.5,
+ "corners": [
+  {
+   "s_m": 438.1,
+   "s_frac": 0.1016,
+   "v25_kmh": 150.0,
+   "v26_target_kmh": 140.8
+  },
+  {
+   "s_m": 1383.0,
+   "s_frac": 0.32085,
+   "v25_kmh": 74.0,
+   "v26_target_kmh": 72.1
+  },
+  {
+   "s_m": 2201.3,
+   "s_frac": 0.51071,
+   "v25_kmh": 112.0,
+   "v26_target_kmh": 107.4
+  },
+  {
+   "s_m": 2722.2,
+   "s_frac": 0.63157,
+   "v25_kmh": 207.0,
+   "v26_target_kmh": 187.1
+  },
+  {
+   "s_m": 3027.3,
+   "s_frac": 0.70236,
+   "v25_kmh": 233.0,
+   "v26_target_kmh": 210.6
+  },
+  {
+   "s_m": 3982.2,
+   "s_frac": 0.92392,
+   "v25_kmh": 201.0,
+   "v26_target_kmh": 181.6
+  }
+ ],
+ "cda0": 0.75,
+ "cl0": 4.6,
+ "ref_used": "2025_q",
+ "transfer": "transfer_2026.json",
+ "warnings": []
+}

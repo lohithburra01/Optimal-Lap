@@ -1,0 +1,53 @@
+{
+ "track": "catalunya",
+ "rho": 1.2098,
+ "t25_s": 71.546,
+ "lap_band_s": [
+  72.118,
+  75.675
+ ],
+ "vtop_target_kmh": 332.7,
+ "corners": [
+  {
+   "s_m": 844.8,
+   "s_frac": 0.18188,
+   "v25_kmh": 162.0,
+   "v26_target_kmh": 150.7
+  },
+  {
+   "s_m": 1722.9,
+   "s_frac": 0.37092,
+   "v25_kmh": 167.0,
+   "v26_target_kmh": 154.7
+  },
+  {
+   "s_m": 2123.4,
+   "s_frac": 0.45714,
+   "v25_kmh": 107.0,
+   "v26_target_kmh": 102.9
+  },
+  {
+   "s_m": 2552.1,
+   "s_frac": 0.54943,
+   "v25_kmh": 165.0,
+   "v26_target_kmh": 153.1
+  },
+  {
+   "s_m": 3491.0,
+   "s_frac": 0.75155,
+   "v25_kmh": 119.0,
+   "v26_target_kmh": 113.7
+  },
+  {
+   "s_m": 3771.8,
+   "s_frac": 0.81202,
+   "v25_kmh": 129.0,
+   "v26_target_kmh": 122.6
+  }
+ ],
+ "cda0": 0.75,
+ "cl0": 4.6,
+ "ref_used": "2025_q",
+ "transfer": "transfer_2026.json",
+ "warnings": []
+}

@@ -1,0 +1,53 @@
+{
+ "track": "canada",
+ "rho": 1.2235,
+ "t25_s": 70.899,
+ "lap_band_s": [
+  71.466,
+  74.991
+ ],
+ "vtop_target_kmh": 336.7,
+ "corners": [
+  {
+   "s_m": 309.2,
+   "s_frac": 0.07141,
+   "v25_kmh": 80.0,
+   "v26_target_kmh": 78.0
+  },
+  {
+   "s_m": 720.0,
+   "s_frac": 0.16627,
+   "v25_kmh": 146.0,
+   "v26_target_kmh": 137.4
+  },
+  {
+   "s_m": 1240.5,
+   "s_frac": 0.28647,
+   "v25_kmh": 101.0,
+   "v26_target_kmh": 97.4
+  },
+  {
+   "s_m": 1988.4,
+   "s_frac": 0.45915,
+   "v25_kmh": 140.0,
+   "v26_target_kmh": 132.3
+  },
+  {
+   "s_m": 2671.3,
+   "s_frac": 0.61686,
+   "v25_kmh": 65.0,
+   "v26_target_kmh": 63.4
+  },
+  {
+   "s_m": 3867.0,
+   "s_frac": 0.89296,
+   "v25_kmh": 134.0,
+   "v26_target_kmh": 127.1
+  }
+ ],
+ "cda0": 0.75,
+ "cl0": 4.6,
+ "ref_used": "2025_q",
+ "transfer": "transfer_2026.json",
+ "warnings": []
+}

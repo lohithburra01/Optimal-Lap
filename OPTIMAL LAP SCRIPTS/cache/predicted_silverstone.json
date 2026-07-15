@@ -1,0 +1,65 @@
+{
+ "track": "silverstone",
+ "rho": 1.2075,
+ "t25_s": 84.892,
+ "lap_band_s": [
+  85.571,
+  89.792
+ ],
+ "vtop_target_kmh": 328.7,
+ "corners": [
+  {
+   "s_m": 893.8,
+   "s_frac": 0.1534,
+   "v25_kmh": 110.0,
+   "v26_target_kmh": 105.6
+  },
+  {
+   "s_m": 1032.4,
+   "s_frac": 0.17719,
+   "v25_kmh": 89.0,
+   "v26_target_kmh": 86.4
+  },
+  {
+   "s_m": 2008.2,
+   "s_frac": 0.34469,
+   "v25_kmh": 180.0,
+   "v26_target_kmh": 165.2
+  },
+  {
+   "s_m": 2161.6,
+   "s_frac": 0.37102,
+   "v25_kmh": 116.0,
+   "v26_target_kmh": 111.0
+  },
+  {
+   "s_m": 3171.1,
+   "s_frac": 0.5443,
+   "v25_kmh": 304.0,
+   "v26_target_kmh": 274.7
+  },
+  {
+   "s_m": 3992.1,
+   "s_frac": 0.68524,
+   "v25_kmh": 230.0,
+   "v26_target_kmh": 207.8
+  },
+  {
+   "s_m": 5029.9,
+   "s_frac": 0.86337,
+   "v25_kmh": 239.0,
+   "v26_target_kmh": 216.0
+  },
+  {
+   "s_m": 5474.8,
+   "s_frac": 0.93973,
+   "v25_kmh": 106.0,
+   "v26_target_kmh": 102.0
+  }
+ ],
+ "cda0": 0.75,
+ "cl0": 4.6,
+ "ref_used": "2025_q",
+ "transfer": "transfer_2026.json",
+ "warnings": []
+}
