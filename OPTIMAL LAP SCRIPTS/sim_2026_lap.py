@@ -721,7 +721,12 @@ E_BATTERY_CAP_J       = 4_000_000      # 4 MJ usable store
 #   346 km/h on the Casino Straight where the real lap tops 332. v_term scales
 #   as CdA^(-1/3), so (346/332)^3 = 1.13x more drag caps the realised peak at
 #   ~332 — matching real. Validated on Canada before porting to Monaco.
-CDA_STRAIGHT_M2       = 0.60
+CDA_STRAIGHT_M2       = 0.80
+# RE-PINNED (Silverstone 2026, FP1): on Silverstone's long straights (Hangar,
+# Wellington) the car ran further before braking and topped 346 km/h vs the real
+# 2026 FP1 top of 317 (HAM 1:29.26). v_term ~ CdA^(-1/3): (346/317)^3 ~ 1.30x
+# more drag -> 0.60*1.30 ~ 0.78; bumped to 0.80 because Silverstone is not fully
+# terminal-limited at the brake point so drag bites a touch less. Caps top ~317.
 # RE-DERIVED (Austria 2026): once the MGU-K deploy curve was corrected to the real
 # regs (zero deploy above 300 km/h), top speed is ICE-only (~400 kW) at the top
 # end, not the ~750 kW the old late-cliff taper implied. The old CDA=0.98 was
@@ -746,7 +751,13 @@ CL_STRAIGHT_M2        = 1.40
 #   the lap just under real (the perfect optimal lap legitimately beats the real
 #   driver). Lateral load stays ~3.5-4 g — still at/below real F1's ~4-5 g, so
 #   still honest grip. Verified empirically: see peak-g check in session.
-CL_CORNER_M2          = 5.00
+CL_CORNER_M2          = 4.20
+# RE-PINNED (Silverstone 2026, FP1): the sim held the Maggotts/Becketts/Hangar
+# fast-corner complex nearly flat at ~320 km/h where real 2026 FP1 lifts to ~282
+# — too much high-speed downforce for the -30%-DF 2026 regs. Downforce ~ v², so
+# trimming 5.00->4.20 sheds grip in the fast corners (balloon closes) while the
+# low-speed dips (hairpin/Vale) barely move (they already overlay FP1). Lateral g
+# only drops, so still at/below real ~5 g = honest.
 
 # Tire grip
 # MU_LONG — near-pure longitudinal tyre coefficient. compute_v_brake_backward
@@ -1515,6 +1526,25 @@ def assert_sanity(v, soc, mode, p_kw, t_arr):
         sys.exit(10)
 
 
+def _apply_car_overrides(args):
+    """Apply per-track CLI knobs to the module-level physics constants.
+
+    All physics reads (drag_force/downforce/v_grip_static/compute_v_brake_
+    backward) resolve these names at call time, so reassigning the module
+    globals before the solve is sufficient. WARM_RHO only seeds the warm
+    velocity profile but is kept consistent with RHO.
+    """
+    g = globals()
+    if args.cda != g["CDA_STRAIGHT_M2"] or args.cl != g["CL_CORNER_M2"] \
+            or args.rho != g["RHO"]:
+        print(f"[sim] car overrides: CDA_STRAIGHT={args.cda:.3f} "
+              f"CL_CORNER={args.cl:.3f} RHO={args.rho:.4f}")
+    g["CDA_STRAIGHT_M2"] = float(args.cda)
+    g["CL_CORNER_M2"] = float(args.cl)
+    g["RHO"] = float(args.rho)
+    g["WARM_RHO"] = float(args.rho)
+
+
 def main():
     # Status lines contain Unicode (α, ×, κ); force UTF-8 stdout so they
     # don't crash on Windows' default cp1252 console codec.
@@ -1539,7 +1569,19 @@ def main():
                     help="Per-side corridor inset (m) for the racing line. "
                          "Omit = default 1.0 (wall-safe, street circuits). "
                          "0 = use full track + kerbs (run-off circuits).")
+    # Per-track car knobs (pre-FP1 calibration pipeline; see
+    # docs/2026-07-15-prefp1-universal-calibration-design.md §3.3). Defaults
+    # reproduce the previous hardcoded constants exactly.
+    ap.add_argument("--cda", type=float, default=CDA_STRAIGHT_M2,
+                    help="X-mode straight-line CdA [m^2] (wing level; "
+                         f"default {CDA_STRAIGHT_M2})")
+    ap.add_argument("--cl", type=float, default=CL_CORNER_M2,
+                    help="Z-mode corner ClA [m^2] (downforce level; "
+                         f"default {CL_CORNER_M2})")
+    ap.add_argument("--rho", type=float, default=RHO,
+                    help=f"air density [kg/m^3], ISA-of-altitude (default {RHO})")
     args = ap.parse_args()
+    _apply_car_overrides(args)
 
     with open(args.outline, encoding="utf-8") as f:
         data = json.load(f)
