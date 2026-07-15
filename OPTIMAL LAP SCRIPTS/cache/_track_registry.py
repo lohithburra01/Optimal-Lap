@@ -99,14 +99,19 @@ def load_ref(path: str) -> tuple[np.ndarray, np.ndarray, float]:
 
 def corner_minima(s: np.ndarray, v: np.ndarray,
                   prominence_kmh: float = 8.0,
-                  min_sep_m: float = 80.0) -> list[tuple[float, float]]:
+                  min_sep_m: float = 80.0,
+                  with_prominence: bool = False):
     """Local speed minima (corners) as [(s_m, v_kmh)], ascending s.
 
+    With with_prominence=True, returns [(s_m, v_kmh, prominence_kmh)].
     Endpoints are not detected (fine: start/finish sits on a straight).
     """
     ds = float(np.median(np.diff(s)))
     dist = max(1, int(round(min_sep_m / max(ds, 1e-6))))
-    idx, _ = find_peaks(-v, prominence=prominence_kmh, distance=dist)
+    idx, props = find_peaks(-v, prominence=prominence_kmh, distance=dist)
+    if with_prominence:
+        return [(float(s[i]), float(v[i]), float(p))
+                for i, p in zip(idx, props["prominences"])]
     return [(float(s[i]), float(v[i])) for i in idx]
 
 
@@ -144,6 +149,34 @@ def pair_minima(m25: list[tuple[float, float]],
 def resample_speed(s: np.ndarray, v: np.ndarray, s_grid: np.ndarray) -> np.ndarray:
     """Speed linearly interpolated onto s_grid (for cross-trace correlation)."""
     return np.interp(s_grid, s, v)
+
+
+def align_pair(s_a: np.ndarray, v_a: np.ndarray,
+               s_b: np.ndarray, v_b: np.ndarray,
+               length_m: float, n: int = 2048
+               ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+    """Align two laps of the SAME circuit onto one distance grid.
+
+    Handles the two artefacts of mixing fetcher eras (FastF1 vs OpenF1):
+      1. integration drift  -> each trace is normalized by its OWN total
+      2. start-line offset  -> best circular shift of b via FFT cross-correlation
+
+    Returns (s_grid [m, 0..length_m), v_a_grid, v_b_grid_aligned, shift_frac).
+    """
+    fa = (s_a - s_a[0]) / (s_a[-1] - s_a[0])
+    fb = (s_b - s_b[0]) / (s_b[-1] - s_b[0])
+    grid = np.arange(n) / n
+    va = np.interp(grid, fa, v_a)
+    vb = np.interp(grid, fb, v_b)
+    a = va - va.mean()
+    b = vb - vb.mean()
+    corr = np.fft.irfft(np.fft.rfft(a) * np.conj(np.fft.rfft(b)), n=n)
+    k = int(np.argmax(corr))                 # vb rolled forward by k matches va
+    vb_al = np.roll(vb, k)
+    shift_frac = k / n
+    if shift_frac > 0.5:
+        shift_frac -= 1.0
+    return grid * length_m, va, vb_al, shift_frac
 
 
 def pava_nonincreasing(v: np.ndarray, r: np.ndarray, w: np.ndarray,

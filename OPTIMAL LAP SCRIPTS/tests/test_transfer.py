@@ -7,6 +7,7 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cache"))
 from _track_registry import (  # noqa: E402
     TRACKS,
+    align_pair,
     corner_minima,
     pair_minima,
     pava_nonincreasing,
@@ -47,6 +48,17 @@ def test_pava_nonincreasing_is_monotone():
     rk = pava_nonincreasing(v, r, np.ones_like(r), knots)
     assert rk.shape == knots.shape
     assert np.all(np.diff(rk) <= 1e-9)
+
+
+def test_align_pair_recovers_circular_shift():
+    n = 1500
+    s = np.linspace(0.0, 4000.0, n, endpoint=False)
+    v = 250 - 100*np.sin(2*np.pi*s/4000.0)**2 - 60*np.exp(-((s-2200)/150.0)**2)
+    shift_m = 120.0                      # trace b starts 120 m later on track
+    vb = np.interp((s + shift_m) % 4000.0, s, v)
+    s_grid, va_g, vb_g, shift = align_pair(s, v, s, vb, length_m=4000.0)
+    assert abs(shift - shift_m/4000.0) < 0.003
+    assert np.corrcoef(va_g, vb_g)[0, 1] > 0.995
 
 
 def test_registry_paths_exist_for_backtest_tracks():
