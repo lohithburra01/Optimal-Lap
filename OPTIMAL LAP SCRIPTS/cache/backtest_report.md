@@ -82,3 +82,19 @@
 - INFO `top`: +10.4 km/h (band +-11.8, informational: FP1 ref)
 - PASS `corners`: median -3.9, worst -41.9 (FP1 rule [-5,+15] on median)
 - corners (sim vs real 2026): 0.156:+0, 0.178:-8, 0.342:-30, 0.370:+9, 0.538:+37, 0.683:-42, 0.860:-23, 0.938:+4
+
+## Spa pre-FP1 ship checks (2026-07-16)
+
+- autofit converged it3: cda 0.737, cl 5.355, rho 1.1764 -> lap 101.91s
+  (2025 pole 100.562 +1.35s), top 343. Gate 9/9 (predicted bands + rails).
+- SHAPE overlay vs 2025 NOR real lap: corr 0.978, shift 0. La Source 77=77,
+  mean 269=269; sim slower mid-corner at Les Combes/Pouhon (-15..-20, the
+  -30% DF), higher on Blanchimont run (+20, X-mode) - both correct-direction
+  2026 signatures, mirroring the real catalunya 2025->2026 pair.
+- a(v) rate-vs-speed vs real 2026 Q laps: gain peaks ~39 @140-180 collapsing
+  to 4.3 @300+ (deploy cliff) - in family (real 43-45 peak, 8-9 @300+);
+  drop grows to ~105 @260-300 vs real 107/140.
+- FP1 WATCH ITEMS (verify Fri, do NOT recalibrate): (1) Eau Rouge held flat
+  (2025 had a breath of lift; no 2025 corner-minimum -> transfer silent);
+  (2) sim gain 220-260 = 25.6 vs catalunya 15.6 / canada 21.6;
+  (3) sim drop 140-180 = 48 vs 27/34 (real bins n<40, single-lap noise).
