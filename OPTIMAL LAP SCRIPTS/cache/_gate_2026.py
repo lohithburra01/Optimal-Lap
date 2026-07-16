@@ -11,11 +11,22 @@ Real-2026 bands measured from reference_2026_spain_q.csv (Catalunya FP1) and
 reference_2026_canada_q.csv via cache/_rates.py (0.5 s windows).
 
 Usage:
-  python cache/_gate_2026.py <sim_csv> <t_2025_pole_s>
+  python cache/_gate_2026.py <sim_csv> <t_2025_pole_s> [--targets predicted_X.json]
+
+With --targets (pre-FP1 pipeline, see docs/2026-07-15-prefp1-universal-
+calibration-design.md §3.7) the fixed lap-delta band is replaced by the
+track's PREDICTED band, and top-speed + corner-minima checks vs the
+predicted targets are added. The cross-track signature rails (gain/drop/
+superclip and the T > 2025+0.8s hard rail) always apply.
 Exit code 0 = all gates pass, 1 = one or more fail.
 """
-import csv, sys
+import argparse, csv, json, sys
 import numpy as np
+
+TARGET_TOP_TOL_KMH = 6.0
+TARGET_CORNER_MED_TOL_KMH = 6.0
+TARGET_WINDOW_FRAC = 0.015
+LAP_RAIL_S = 0.8
 
 WIN_S = 0.5
 
@@ -33,12 +44,13 @@ SUPERCLIP_PEAK_MIN = 35.0
 
 
 def load(path):
-    t, v, th, br = [], [], [], []
+    t, v, th, br, s = [], [], [], [], []
     with open(path, encoding="utf-8") as f:
         for r in csv.DictReader(f):
             t.append(float(r["time_s"])); v.append(float(r["speed"]))
             th.append(float(r.get("throttle", 0) or 0)); br.append(float(r.get("brake", 0) or 0))
-    return np.array(t), np.array(v), np.array(th), np.array(br)
+            s.append(float(r.get("distance", 0) or 0))
+    return np.array(t), np.array(v), np.array(th), np.array(br), np.array(s)
 
 
 def rate_kmh_s(t, v):
@@ -52,11 +64,15 @@ def rate_kmh_s(t, v):
     return out
 
 
-def main(sim_csv, t_2025):
-    t, v, th, br = load(sim_csv)
+def main(sim_csv, t_2025, targets_path=None):
+    t, v, th, br, s = load(sim_csv)
     r = rate_kmh_s(t, v)
     top = v.max()
     t_lap = t[-1] - t[0]
+    targets = None
+    if targets_path:
+        with open(targets_path, encoding="utf-8") as f:
+            targets = json.load(f)
 
     gain = np.abs(r[(th > 80) & (br < 5) & (v < 0.88 * top) & (r > 2)])
     drop = np.abs(r[(br > 15) & (r < -2)])
@@ -70,11 +86,34 @@ def main(sim_csv, t_2025):
         checks.append(ok)
         print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
 
-    print(f"\n=== 2026 GATE: {sim_csv} ===   lap={t_lap:.2f}s  top={top:.0f} km/h")
+    print(f"\n=== 2026 GATE: {sim_csv} ===   lap={t_lap:.2f}s  top={top:.0f} km/h"
+          + (f"   targets={targets['track']}" if targets else ""))
     delta = t_lap - t_2025
-    gate("lap slower than 2025 pole",
-         LAP_DELTA_LO <= delta <= LAP_DELTA_HI,
-         f"{t_lap:.2f}s = {delta:+.2f}s vs 2025 ({t_2025:.2f}s); want +{LAP_DELTA_LO}..+{LAP_DELTA_HI}s")
+    if targets:
+        lo, hi = targets["lap_band_s"]
+        gate("lap above 2025+rail hard floor", delta >= LAP_RAIL_S,
+             f"{t_lap:.2f}s = {delta:+.2f}s vs 2025 ({t_2025:.2f}s); rail +{LAP_RAIL_S}s")
+        gate("lap inside PREDICTED band", lo <= t_lap <= hi,
+             f"{t_lap:.2f}s; predicted [{lo:.2f}, {hi:.2f}]s")
+        vt = float(targets["vtop_target_kmh"])
+        gate("top speed near PREDICTED", abs(top - vt) <= TARGET_TOP_TOL_KMH,
+             f"{top:.1f} vs target {vt:.1f} (+-{TARGET_TOP_TOL_KMH})")
+        total = s[-1] - s[0]
+        frac = (s - s[0]) / total
+        errs = []
+        for c in targets["corners"]:
+            d = np.abs(frac - c["s_frac"]); d = np.minimum(d, 1.0 - d)
+            w = d <= TARGET_WINDOW_FRAC
+            sv = float(np.min(v[w])) if np.any(w) else float(np.min(v))
+            errs.append(sv - c["v26_target_kmh"])
+        cmed = float(np.median(errs))
+        gate("corner minima near PREDICTED", abs(cmed) <= TARGET_CORNER_MED_TOL_KMH,
+             f"median err {cmed:+.1f} km/h over {len(errs)} corners "
+             f"(+-{TARGET_CORNER_MED_TOL_KMH})")
+    else:
+        gate("lap slower than 2025 pole",
+             LAP_DELTA_LO <= delta <= LAP_DELTA_HI,
+             f"{t_lap:.2f}s = {delta:+.2f}s vs 2025 ({t_2025:.2f}s); want +{LAP_DELTA_LO}..+{LAP_DELTA_HI}s")
     gm = np.median(gain) if len(gain) else 0
     gate("GAIN median in real band", GAIN_MED_LO <= gm <= GAIN_MED_HI,
          f"{gm:.1f} km/h/s; want {GAIN_MED_LO}-{GAIN_MED_HI}")
@@ -97,4 +136,10 @@ def main(sim_csv, t_2025):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1], float(sys.argv[2])))
+    ap = argparse.ArgumentParser()
+    ap.add_argument("sim_csv")
+    ap.add_argument("t_2025", type=float)
+    ap.add_argument("--targets", default=None,
+                    help="predicted_<track>.json from cache/_predict_track.py")
+    a = ap.parse_args()
+    sys.exit(main(a.sim_csv, a.t_2025, a.targets))

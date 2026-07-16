@@ -40,3 +40,45 @@
 - INFO `top`: +13.6 km/h (band +-11.8, informational: FP1 ref)
 - PASS `corners`: median +8.6, worst +42.4 (FP1 rule [-5,+15] on median)
 - corners (sim vs real 2026): 0.156:+4, 0.179:-6, 0.342:-24, 0.371:+22, 0.538:+42, 0.683:-14, 0.860:+18, 0.938:+13
+
+
+## Backtest v2 — leave-one-out, 4 tracks
+
+| track | ref | cda | cl | rho | lap sim | real | corr | top err | corner med | worst | fails |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| canada | Q | 0.560 | 5.09 | 1.224 | 73.51 | 72.58 | 0.968 | +8.5 | +7.0 | -32.0 | **2** |
+| catalunya | Q | 0.713 | 5.00 | 1.210 | 73.66 | 75.04 | 0.985 | -12.0 | -10.6 | +17.3 | **2** |
+| austria | FP1 | 0.750 | 4.60 | 1.147 | 66.35 | 67.84 | 0.963 | -10.6 | +8.2 | -25.0 | **0** |
+| silverstone | FP1 | 0.750 | 4.60 | 1.208 | 86.32 | 89.64 | 0.940 | +10.4 | -3.9 | -41.9 | **0** |
+
+### canada (v2)
+- PASS `corr`: 0.968 (>= 0.94)
+- PASS `lap_rail`: 73.51s > 71.70s
+- FAIL `lap_band`: 73.51s in [71.08,72.58] (Q ref)
+- PASS `top`: +8.5 km/h (band +-11.8)
+- FAIL `corners`: median +7.0, worst -32.0
+- corners (sim vs real 2026): 0.073:+16, 0.165:-19, 0.285:+15, 0.460:-32, 0.614:+15, 0.900:-1
+
+### catalunya (v2)
+- PASS `corr`: 0.985 (>= 0.94)
+- PASS `lap_rail`: 73.66s > 72.35s
+- PASS `lap_band`: 73.66s in [73.54,75.04] (Q ref)
+- FAIL `top`: -12.0 km/h (band +-5.0)
+- FAIL `corners`: median -10.6, worst +17.3
+- corners (sim vs real 2026): 0.185:-16, 0.374:-8, 0.460:-6, 0.550:-15, 0.625:-4, 0.755:-14, 0.815:+17, 0.932:-14
+
+### austria (v2)
+- PASS `corr`: 0.963 (>= 0.94)
+- PASS `lap_rail`: 66.35s > 64.77s
+- PASS `lap_band`: 66.35s in [64.34,66.84] (FP1 ref)
+- INFO `top`: -10.6 km/h (band +-11.8, informational: FP1 ref)
+- PASS `corners`: median +8.2, worst -25.0 (FP1 rule [-5,+15] on median)
+- corners (sim vs real 2026): 0.106:-25, 0.323:+16, 0.511:+8, 0.633:+17, 0.705:-12, 0.880:+16, 0.927:+3
+
+### silverstone (v2)
+- PASS `corr`: 0.940 (>= 0.94)
+- PASS `lap_rail`: 86.32s > 85.69s
+- PASS `lap_band`: 86.32s in [86.14,88.64] (FP1 ref)
+- INFO `top`: +10.4 km/h (band +-11.8, informational: FP1 ref)
+- PASS `corners`: median -3.9, worst -41.9 (FP1 rule [-5,+15] on median)
+- corners (sim vs real 2026): 0.156:+0, 0.178:-8, 0.342:-30, 0.370:+9, 0.538:+37, 0.683:-42, 0.860:-23, 0.938:+4
