@@ -55,9 +55,12 @@ def run_sim(slug: str, spec: dict, cda: float, cl: float, rho: float,
            "--cda", f"{cda:.4f}", "--cl", f"{cl:.4f}", "--rho", f"{rho:.4f}"]
     r = subprocess.run(cmd, capture_output=True, text=True, cwd=REPO_ROOT)
     if r.returncode != 0:
-        print(r.stdout[-2000:], file=sys.stderr)
-        print(r.stderr[-2000:], file=sys.stderr)
-        raise RuntimeError(f"sim failed for {slug} ({tag}) rc={r.returncode}")
+        # The sim hard-fails its own realism sanity (e.g. braking-signature
+        # rails) when a knob step goes unphysical. Report it as a boundary,
+        # let the caller back off - do not crash the fit.
+        tail = "\n".join((r.stdout + r.stderr).strip().splitlines()[-3:])
+        print(f"[autofit] sim sanity-failed at {tag} rc={r.returncode}:\n{tail}")
+        return None, None
     return csv_out, rl_out
 
 
@@ -119,11 +122,25 @@ def main() -> int:
     t25 = float(targets["t25_s"])
     lap_rail = t25 + LAP_RAIL_S
     cda, cl = float(targets["cda0"]), float(targets["cl0"])
-    hist = []           # (cda, cl, f1, f2)
+    hist = []           # (cda, cl, f1, f2) - successful sims only
+    good = None         # last knobs that produced a sane sim
+    n_boundary = 0
     tier_name = "?"
     m = None
     for it in range(1 + args.max_iters):
         csv_out, _ = run_sim(args.track, spec, cda, cl, rho, f"iter{it}")
+        if csv_out is None:
+            n_boundary += 1
+            if good is None:
+                print(f"[autofit] ABORT: initial knobs (cda0={cda}, cl0={cl}) "
+                      f"already unphysical for {args.track}", file=sys.stderr)
+                return 2
+            # halve the step back toward the last sane point and retry
+            cda = 0.5 * (cda + good[0])
+            cl = 0.5 * (cl + good[1])
+            print(f"[autofit] backing off to cda={cda:.3f} cl={cl:.3f}")
+            continue
+        good = (cda, cl)
         m = measure(csv_out, targets)
         tier, tier_name = cl_tier(m["corners"])
         f1 = m["vtop"] - vtop_t
@@ -156,6 +173,12 @@ def main() -> int:
         cl_new = float(np.clip(cl_new, cl - 0.8, cl + 0.8))
         cl = float(np.clip(cl_new, *CL_LIM))
 
+    if m is None:
+        print(f"[autofit] ABORT: no successful sim for {args.track}", file=sys.stderr)
+        return 2
+    # if the loop ended on a backed-off (unsimulated) knob pair, report the
+    # last SUCCESSFUL state
+    cda, cl = good
     f1 = hist[-1][2]
     f2 = hist[-1][3]
     rail_ok = m["lap_s"] > lap_rail
@@ -172,7 +195,7 @@ def main() -> int:
                top_err_kmh=round(f1, 2), hs_median_err_kmh=round(f2, 2),
                cl_tier=tier_name,
                ls_median_err_kmh=None if ls_med is None else round(ls_med, 2),
-               lap_s=round(m["lap_s"], 3),
+               lap_s=round(m["lap_s"], 3), n_boundary_backoffs=n_boundary,
                targets=os.path.basename(tpath),
                csv=f"cache/autofit_{args.track}_sim.csv",
                corners=[dict(s_frac=x["target"]["s_frac"],
@@ -190,7 +213,7 @@ def main() -> int:
           f"lap={m['lap_s']:.2f}s  low-speed residual median="
           f"{'n/a' if ls_med is None else format(ls_med, '+.1f')} (reported, not fitted)")
     print(f"[autofit] wrote {opath}")
-    return 0 if conv else 1
+    return 0          # completed (converged flag lives in the json); 2 = no sim ran
 
 
 if __name__ == "__main__":
