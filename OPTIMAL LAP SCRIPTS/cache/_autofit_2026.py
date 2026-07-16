@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -100,6 +101,18 @@ def cl_tier(corners: list[dict]) -> tuple[list[dict], str]:
     return list(corners), "all"
 
 
+def tier_objective(tier: list[dict]) -> float:
+    """Trimmed median of corner errors: with >=3 corners, drop the single
+    worst |err| first — one phantom-slow corner (a line artifact the CL knob
+    cannot fix) must not steer the whole fit (backtest v1 lesson)."""
+    e = np.array([x["err"] for x in tier], dtype=float)
+    if len(e) == 0:
+        return 0.0
+    if len(e) >= 3:
+        e = np.delete(e, int(np.argmax(np.abs(e))))
+    return float(np.median(e))
+
+
 def main() -> int:
     here = os.path.dirname(os.path.abspath(__file__))
     ap = argparse.ArgumentParser()
@@ -122,11 +135,12 @@ def main() -> int:
     t25 = float(targets["t25_s"])
     lap_rail = t25 + LAP_RAIL_S
     cda, cl = float(targets["cda0"]), float(targets["cl0"])
+    here = os.path.dirname(os.path.abspath(__file__))
+    best_csv = os.path.join(here, f"autofit_{args.track}_sim_best.csv")
     hist = []           # (cda, cl, f1, f2) - successful sims only
     good = None         # last knobs that produced a sane sim
+    best = None         # best rail-passing (else least-bad) state seen
     n_boundary = 0
-    tier_name = "?"
-    m = None
     for it in range(1 + args.max_iters):
         csv_out, _ = run_sim(args.track, spec, cda, cl, rho, f"iter{it}")
         if csv_out is None:
@@ -144,13 +158,20 @@ def main() -> int:
         m = measure(csv_out, targets)
         tier, tier_name = cl_tier(m["corners"])
         f1 = m["vtop"] - vtop_t
-        f2 = float(np.median([x["err"] for x in tier])) if tier else 0.0
+        f2 = tier_objective(tier)
         hist.append((cda, cl, f1, f2))
-        rail_flag = "" if m["lap_s"] > lap_rail else "  RAIL-VIOLATION"
+        rail_now = m["lap_s"] > lap_rail
+        # rank: rail-passing states first, then objective size
+        score = (0 if rail_now else 1, abs(f2) + 0.5 * abs(f1))
+        if best is None or score < best["score"]:
+            shutil.copyfile(csv_out, best_csv)
+            best = dict(score=score, cda=cda, cl=cl, f1=f1, f2=f2,
+                        m=m, tier_name=tier_name, rail_ok=rail_now)
         print(f"[autofit] {args.track} it{it}: cda={cda:.3f} cl={cl:.3f} "
               f"lap={m['lap_s']:.2f}s vtop={m['vtop']:.1f} (f1={f1:+.1f}) "
-              f"tier[{tier_name}] f2={f2:+.1f}{rail_flag}")
-        if abs(f1) <= TOL_TOP and abs(f2) <= TOL_HS:
+              f"tier[{tier_name}] f2={f2:+.1f}"
+              f"{'' if rail_now else '  RAIL-VIOLATION'}")
+        if abs(f1) <= TOL_TOP and abs(f2) <= TOL_HS and rail_now:
             break
         if it == args.max_iters:
             break
@@ -163,25 +184,31 @@ def main() -> int:
             cda_new = cda * (m["vtop"] / vtop_t) ** 3
         cda_new = float(np.clip(cda_new, cda * 0.75, cda * 1.25))
         cda = float(np.clip(cda_new, *CDA_LIM))
-        # --- CL update: corner grip ~ aero share; bump then secant ---
+        # --- CL update: corner grip ~ aero share; bump then secant.
+        # From a rail-violating state CL may only go DOWN: the lap rail is
+        # the physical ceiling on downforce (2026 cannot out-lap 2025), so
+        # chasing slow corner targets upward from there is forbidden.
         if len(hist) >= 2 and abs(hist[-1][1] - hist[-2][1]) > 1e-3 \
                 and abs(hist[-1][3] - hist[-2][3]) > 0.2:
             d = (hist[-1][3] - hist[-2][3]) / (hist[-1][1] - hist[-2][1])
             cl_new = cl - f2 / d
         else:
             cl_new = cl - np.sign(f2) * 0.4          # first bump toward target
+        if not rail_now:
+            cl_new = min(cl_new, cl - 0.15)
         cl_new = float(np.clip(cl_new, cl - 0.8, cl + 0.8))
         cl = float(np.clip(cl_new, *CL_LIM))
 
-    if m is None:
+    if best is None:
         print(f"[autofit] ABORT: no successful sim for {args.track}", file=sys.stderr)
         return 2
-    # if the loop ended on a backed-off (unsimulated) knob pair, report the
-    # last SUCCESSFUL state
-    cda, cl = good
-    f1 = hist[-1][2]
-    f2 = hist[-1][3]
-    rail_ok = m["lap_s"] > lap_rail
+    # Report/keep the BEST state (rail-passing preferred), not the last one.
+    shutil.copyfile(best_csv, os.path.join(here, f"autofit_{args.track}_sim.csv"))
+    cda, cl = best["cda"], best["cl"]
+    f1, f2 = best["f1"], best["f2"]
+    m = best["m"]
+    tier_name = best["tier_name"]
+    rail_ok = best["rail_ok"]
     conv = abs(f1) <= TOL_TOP and abs(f2) <= TOL_HS and rail_ok
     if not rail_ok:
         print(f"[autofit] RAIL VIOLATION: lap {m['lap_s']:.2f}s <= t25+{LAP_RAIL_S}"

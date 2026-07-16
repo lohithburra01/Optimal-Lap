@@ -438,13 +438,48 @@ def build_raceline(outer_raw, inner_raw, inset_m=None):
     # wiggles (the line swings a few metres station-to-station), and the s=0
     # interpolating spline traces every one — on video the car visibly wobbles and
     # jerks at apexes. A gentle gaussian on the closed XY (sigma ~ a few stations =
-    # a few metres) removes that high-frequency wiggle while leaving the low-
-    # frequency corner shape (tens of metres) intact.
+    # a few metres) removes that high-frequency wiggle.
+    #
+    # CURVATURE-ADAPTIVE (LINE_WOBBLE_ADAPTIVE=1, default): a UNIFORM gaussian
+    # also rounds genuine sharp apexes (documented: hairpin R8->R23; apex speed
+    # ~ sqrt(R) so the lap ran seconds too fast and broke the 2026>2025 rail —
+    # backtest v1). Weight the strong smoothing by local curvature of a
+    # prefiltered copy: straights/gentle bends (R>250 m) get the full sigma,
+    # genuine corners (R<80 m) keep their shape and only get a light
+    # anti-pixel-noise sigma. 5 m smoothing barely moves a R>250 arc (sagitta
+    # ~1 cm) so nothing of the corner SHAPE is lost where w=1.
     _wsig = float(os.environ.get("LINE_WOBBLE_SIG", "2.5"))
+    _adaptive = os.environ.get("LINE_WOBBLE_ADAPTIVE", "1") != "0"
     if _wsig > 0:
         from scipy.ndimage import gaussian_filter1d
-        raceline[:, 0] = gaussian_filter1d(raceline[:, 0], _wsig, mode="wrap")
-        raceline[:, 1] = gaussian_filter1d(raceline[:, 1], _wsig, mode="wrap")
+        xs = gaussian_filter1d(raceline[:, 0], _wsig, mode="wrap")
+        ys = gaussian_filter1d(raceline[:, 1], _wsig, mode="wrap")
+        if not _adaptive:
+            raceline[:, 0] = xs
+            raceline[:, 1] = ys
+        else:
+            KAPPA_LO = 1.0 / 250.0     # R>=250 m: full strong smoothing
+            KAPPA_HI = 1.0 / 80.0      # R<=80 m: preserve the apex
+            SIG_LIGHT = 0.8            # anti-pixel-noise floor everywhere
+            ref = np.column_stack([
+                gaussian_filter1d(raceline[:, 0], 3.0, mode="wrap"),
+                gaussian_filter1d(raceline[:, 1], 3.0, mode="wrap")])
+            a = np.roll(ref, 1, axis=0); b = ref; c = np.roll(ref, -1, axis=0)
+            ab = b - a; bc = c - b; ca = c - a
+            cross = ab[:, 0] * bc[:, 1] - ab[:, 1] * bc[:, 0]
+            denom = (np.linalg.norm(ab, axis=1) * np.linalg.norm(bc, axis=1)
+                     * np.linalg.norm(ca, axis=1))
+            kmag = np.abs(np.where(denom < 1e-9, 0.0,
+                                   2.0 * cross / np.maximum(denom, 1e-12)))
+            kmag = gaussian_filter1d(kmag, 2.0, mode="wrap")
+            w = np.clip((KAPPA_HI - kmag) / (KAPPA_HI - KAPPA_LO), 0.0, 1.0)
+            xl = gaussian_filter1d(raceline[:, 0], SIG_LIGHT, mode="wrap")
+            yl = gaussian_filter1d(raceline[:, 1], SIG_LIGHT, mode="wrap")
+            raceline[:, 0] = w * xs + (1.0 - w) * xl
+            raceline[:, 1] = w * ys + (1.0 - w) * yl
+            n_pres = int(np.sum(w < 0.5))
+            print(f"[sim] adaptive de-wobble: {n_pres}/{len(w)} stations "
+                  f"apex-preserved (R<~{1/((KAPPA_LO+KAPPA_HI)/2):.0f} m)")
 
     # Final κ on the uniformly-sampled raceline
     seg = np.linalg.norm(np.diff(np.vstack([raceline, raceline[0]]), axis=0), axis=1)
