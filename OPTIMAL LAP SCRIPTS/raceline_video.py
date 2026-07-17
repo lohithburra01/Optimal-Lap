@@ -96,21 +96,24 @@ KERB_BLOCK_M      = 0.8      # length of each white block in the middle section
 KERB_GAP_M        = 0.8      # length of each empty (hole) section between blocks
 KERB_COLOR        = (240, 240, 240)    # solid white BGR
 
-# Layout — Instagram Reels + YouTube Shorts safe zones.
+# Layout — Instagram Reels + YouTube Shorts safe zones. The bottom ~250 px
+# (below ~1670) is covered by platform UI (captions/actions/home bar): nothing
+# critical may live there. HUD cluster compacted so the 3D elevation band
+# fits fully inside the safe area.
 TITLE_LINE_1      = "THE OPTIMAL LAP"
 TITLE_Y_1         = 320
 TITLE_Y_2         = 400
 CAMERA_Y_FRAC     = 0.45
-SPEED_Y           = 1200
+SPEED_Y           = 1112
 KMH_Y_OFFSET      = 78
-LAP_Y             = 1320
-WATERMARK_Y       = 1410
+LAP_Y             = 1240
+WATERMARK_Y       = 1288
 MAP_SIZE          = 240
 MAP_Y_TOP         = 460
 MAP_X_RIGHT_INSET = 40
 
 # HUD — 2026 power-mode label
-MODE_LABEL_Y         = 1135
+MODE_LABEL_Y         = 1050
 
 MODE_COLORS = {
     "DEPLOY":    (60, 220, 100),
@@ -124,25 +127,30 @@ MODE_COLORS = {
 # base, no grid/background. Camera = drone: follows the car with lag (never
 # locked), continuously rotating, oblique angle so the hills read. The car on
 # this view and the dot on the 2D map are the same telemetry sample per frame.
-EL3D_Y0           = 1440              # top row of the viewport on the frame
-EL3D_H            = HEIGHT - EL3D_Y0
+EL3D_Y0           = 1310              # top row of the viewport on the frame
+EL3D_H            = HEIGHT - EL3D_Y0  # canvas runs to the frame bottom...
+EL3D_CY_FRAC      = 0.30              # ...but content centers in the SAFE part
+                                      # (rows 1310-1670); below stays black
 EL3D_FADE         = 70                # soft blend rows at the top edge
-EL3D_EXAG         = 2.2               # vertical exaggeration
+EL3D_EXAG         = 2.6               # vertical exaggeration (contrast boost)
 EL3D_HALF_W       = 10.0              # ribbon half width (m, widened for reach)
-EL3D_ELEV_ANGLE   = 0.5760            # 33 deg — oblique, shows elevation
-EL3D_REVS_PER_LAP = 1.25              # slow continuous rotation
+EL3D_ELEV_ANGLE   = 0.2618            # 15 deg — low skyline angle: highs/lows pop
+EL3D_REVS_PER_LAP = 0.9               # calm continuous rotation
 EL3D_YAW0         = 0.6109            # 35 deg initial azimuth
-EL3D_CAM_LAG_S    = 2.5               # drone lag (EMA time constant, s)
-EL3D_DIST         = 2600.0            # camera distance from target (m)
-EL3D_FOCAL        = 800.0             # focal length in px
+EL3D_DIST         = 3400.0            # FIXED orbit radius around the track
+                                      # center: constant scale, no zoom, whole
+                                      # circuit framed (drone circles, never dives)
+EL3D_FOCAL        = 1200.0            # focal length in px (sized so the whole
+                                      # object stays inside the safe band)
 EL3D_WALL_BGR     = (8, 23, 42)       # SOLID wall color (deep brown #2A1708)
 EL3D_CAR_RING     = (12, 137, 232)    # orange ring around the white car dot
 EL3D_TRAIL_N      = 40
 
 
 def _el3d_ramp(t):
-    """Sequential altitude ramp, dark->bright brand orange (BGR)."""
-    lo, hi = (74, 36, 8), (255, 183, 77)          # RGB endpoints
+    """Sequential altitude ramp, dark->bright brand orange (BGR). Endpoints
+    pushed apart so the high/low contrast carries at small size."""
+    lo, hi = (52, 26, 6), (255, 196, 110)         # RGB endpoints
     r = lo[0] + (hi[0] - lo[0]) * t
     g = lo[1] + (hi[1] - lo[1]) * t
     b = lo[2] + (hi[2] - lo[2]) * t
@@ -905,7 +913,7 @@ def render_video(outer, inner, raceline, ver_t, ver_d, ver_v_ms, lap_time,
         b3R = e3R.copy(); b3R[:, 2] = 0.0
         _tz = p3[:, 2] / max(float(p3[:, 2].max()), 1e-6)
         rib_col = [_el3d_ramp(t) for t in _tz]
-        el3d_tgt = p3[0].copy()
+        el3d_ctr = np.array([0.0, 0.0, float(p3[:, 2].mean())])
         el3d_trail = []
     elif elev is not None:
         print("[elev] json has no 'stations' — 3D flyover disabled", file=sys.stderr)
@@ -1013,14 +1021,12 @@ def render_video(outer, inner, raceline, ver_t, ver_d, ver_v_ms, lap_time,
             _i0 = int(_fx) % n3
             _u = _fx - int(_fx)
             car3 = p3[_i0] + (p3[(_i0 + 1) % n3] - p3[_i0]) * _u
-            _al = 1.0 - math.exp(-(1.0 / fps) / EL3D_CAM_LAG_S)
-            el3d_tgt += (car3 - el3d_tgt) * _al
             yaw = (2.0 * math.pi * EL3D_REVS_PER_LAP * t / max(lap_time, 1e-6)
                    + EL3D_YAW0)
             _ce, _se = math.cos(EL3D_ELEV_ANGLE), math.sin(EL3D_ELEV_ANGLE)
-            cam3 = el3d_tgt + np.array([math.cos(yaw) * _ce,
+            cam3 = el3d_ctr + np.array([math.cos(yaw) * _ce,
                                         math.sin(yaw) * _ce, _se]) * EL3D_DIST
-            fwd = el3d_tgt - cam3
+            fwd = el3d_ctr - cam3
             fwd = fwd / max(np.linalg.norm(fwd), 1e-9)
             rgt = np.cross(fwd, np.array([0.0, 0.0, 1.0]))
             rgt = rgt / max(np.linalg.norm(rgt), 1e-9)
@@ -1030,7 +1036,7 @@ def render_video(outer, inner, raceline, ver_t, ver_d, ver_v_ms, lap_time,
                 rel = np.atleast_2d(V) - cam3
                 zc = np.maximum(rel @ fwd, 1.0)
                 sx = WIDTH * 0.5 + EL3D_FOCAL * (rel @ rgt) / zc
-                sy = EL3D_H * 0.52 - EL3D_FOCAL * (rel @ upv) / zc
+                sy = EL3D_H * EL3D_CY_FRAC - EL3D_FOCAL * (rel @ upv) / zc
                 return np.column_stack([sx, sy]), zc
 
             canvas3 = np.zeros((EL3D_H, WIDTH, 3), dtype=np.uint8)
