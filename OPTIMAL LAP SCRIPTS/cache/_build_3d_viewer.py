@@ -94,7 +94,7 @@ TEMPLATE = r"""<!DOCTYPE html>
   <div class="row"><span class="val" id="grade">–</span> <span class="unit">GRADE</span></div>
   <div class="row"><span class="val" id="clock">0.0</span> <span class="unit">S</span></div>
 </div>
-<div id="legend"><span class="sw" style="background:linear-gradient(90deg,#3b4bd8,#25c1a1,#ffd23e,#ff7a1a)"></span>__ALTMIN__ → __ALTMAX__ m ASL</div>
+<div id="legend"><span class="sw" style="background:linear-gradient(90deg,#4a2408,#a05f1e,#ffb74d)"></span>__ALTMIN__ → __ALTMAX__ m ASL</div>
 <div id="bar">
   <button id="play">⏸ pause</button>
   <input id="scrub" type="range" min="0" max="1000" value="0">
@@ -128,7 +128,7 @@ const cam = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 1, 20000);
 const controls = new OrbitControls(cam, renderer.domElement);
 controls.enableDamping = true;
 
-const ramp = t => new THREE.Color().setHSL(0.65-0.55*t, 0.75, 0.30+0.28*t);
+const ramp = t => new THREE.Color(0x4a2408).lerp(new THREE.Color(0xffb74d), t);
 function elevOf(p){ return p[2]; }
 function yOf(p){ return (p[2]-ALT0)*EX + 4; }
 function v3(p){ return new THREE.Vector3(p[0]-cx, yOf(p), -(p[1]-cy)); }
@@ -161,9 +161,10 @@ function buildTrack(){
     el.push(vl.x,vl.y+0.4,vl.z); er.push(vr.x,vr.y+0.4,vr.z);
     const j=i*2, k=((i+1)%N)*2;
     idx.push(j,j+1,k, j+1,k+1,k);
-    cpos.push(vl.x,vl.y,vl.z, vl.x,0,vl.z);
-    const cj=i*2, ck=((i+1)%N)*2;
-    cidx.push(cj,cj+1,ck, cj+1,ck+1,ck);
+    cpos.push(vl.x,vl.y,vl.z, vl.x,0,vl.z, vr.x,vr.y,vr.z, vr.x,0,vr.z);
+    const cj=i*4, ck=((i+1)%N)*4;
+    cidx.push(cj,cj+1,ck, cj+1,ck+1,ck,
+              cj+2,cj+3,ck+2, cj+3,ck+3,ck+2);
   }
   const g=new THREE.BufferGeometry();
   g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
@@ -174,8 +175,8 @@ function buildTrack(){
   const cg=new THREE.BufferGeometry();
   cg.setAttribute('position',new THREE.Float32BufferAttribute(cpos,3));
   cg.setIndex(cidx);
-  curtain=new THREE.Mesh(cg,new THREE.MeshBasicMaterial({color:0x8a5a18,transparent:true,
-    opacity:0.14,side:THREE.DoubleSide,depthWrite:false}));
+  curtain=new THREE.Mesh(cg,new THREE.MeshBasicMaterial({color:0x2a1708,
+    side:THREE.DoubleSide}));
   scene.add(curtain);
   const mkEdge=a=>{const eg=new THREE.BufferGeometry();
     eg.setAttribute('position',new THREE.Float32BufferAttribute([...a, a[0],a[1],a[2]],3));

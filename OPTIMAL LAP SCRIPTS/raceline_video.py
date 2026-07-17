@@ -118,18 +118,35 @@ MODE_COLORS = {
     "REGEN":     (255, 230, 0),
 }
 
-# Elevation panel (only when --elevation-json is given): the lap's altitude
-# silhouette in the empty bottom third; the driven portion fills in orange and
-# a marker rides the hill, with live altitude + gradient readout. Data comes
-# from cache/_fetch_elevation.py (real z from F1 position telemetry).
-EP_X0, EP_X1      = 70, WIDTH - 70
-EP_Y0, EP_Y1      = 1560, 1745
-EP_HEADROOM       = 34            # px kept above the highest point for labels
-EP_FILL_DIM       = (46, 42, 38)  # BGR undriven silhouette
-EP_FILL_DONE      = (12, 137, 232)  # BGR driven portion (brand orange)
-EP_STROKE         = (150, 150, 150)
-EP_GRADE_UP_RGB   = (255, 157, 46)
-EP_GRADE_DOWN_RGB = (89, 183, 255)
+# 3D elevation flyover (only when --elevation-json is given): the elevation-
+# lifted track rendered as a true 3D object in the bottom third — altitude-
+# colored ribbon (sequential orange ramp), SOLID extrusion walls down to the
+# base, no grid/background. Camera = drone: follows the car with lag (never
+# locked), continuously rotating, oblique angle so the hills read. The car on
+# this view and the dot on the 2D map are the same telemetry sample per frame.
+EL3D_Y0           = 1440              # top row of the viewport on the frame
+EL3D_H            = HEIGHT - EL3D_Y0
+EL3D_FADE         = 70                # soft blend rows at the top edge
+EL3D_EXAG         = 2.2               # vertical exaggeration
+EL3D_HALF_W       = 10.0              # ribbon half width (m, widened for reach)
+EL3D_ELEV_ANGLE   = 0.5760            # 33 deg — oblique, shows elevation
+EL3D_REVS_PER_LAP = 1.25              # slow continuous rotation
+EL3D_YAW0         = 0.6109            # 35 deg initial azimuth
+EL3D_CAM_LAG_S    = 2.5               # drone lag (EMA time constant, s)
+EL3D_DIST         = 2600.0            # camera distance from target (m)
+EL3D_FOCAL        = 800.0             # focal length in px
+EL3D_WALL_BGR     = (8, 23, 42)       # SOLID wall color (deep brown #2A1708)
+EL3D_CAR_RING     = (12, 137, 232)    # orange ring around the white car dot
+EL3D_TRAIL_N      = 40
+
+
+def _el3d_ramp(t):
+    """Sequential altitude ramp, dark->bright brand orange (BGR)."""
+    lo, hi = (74, 36, 8), (255, 183, 77)          # RGB endpoints
+    r = lo[0] + (hi[0] - lo[0]) * t
+    g = lo[1] + (hi[1] - lo[1]) * t
+    b = lo[2] + (hi[2] - lo[2]) * t
+    return (int(b), int(g), int(r))
 
 
 # =============================================================
@@ -869,29 +886,30 @@ def render_video(outer, inner, raceline, ver_t, ver_d, ver_v_ms, lap_time,
     font_wm         = load_font(24, True)
     font_mode_label = load_font(24, True)
     has_mode_hud    = mode is not None
-    font_ep_label   = load_font(22, True)
-    font_ep_val     = load_font(30, True)
-    font_ep_tick    = load_font(18, False)
-
-    # Elevation panel: static pixel silhouette precomputed once. The profile
-    # grid is periodic in lap fraction; pad one wrap point so the polyline
-    # reaches the right edge.
-    if elev is not None:
-        ep_f = np.asarray(elev["dist_frac"], dtype=float)
-        ep_z = np.asarray(elev["elev_m"], dtype=float)
-        ep_f = np.concatenate([ep_f, [1.0]])
-        ep_z = np.concatenate([ep_z, [ep_z[0]]])
-        ep_zmin, ep_zmax = float(ep_z.min()), float(ep_z.max())
-        ep_span = max(ep_zmax - ep_zmin, 1e-6)
-        ep_px = EP_X0 + ep_f * (EP_X1 - EP_X0)
-        ep_py = (EP_Y1 - (ep_z - ep_zmin) / ep_span
-                 * (EP_Y1 - EP_Y0 - EP_HEADROOM))
-        ep_poly_full = np.array(
-            [[EP_X0, EP_Y1]] + list(zip(ep_px, ep_py)) + [[EP_X1, EP_Y1]],
-            np.int32)
-        # gradient % on the same grid (central difference over the lap length)
-        ep_lap_m = float(ver_d[-1])
-        ep_grade = np.gradient(ep_z, ep_f * ep_lap_m) * 100.0
+    # 3D elevation flyover: static geometry precomputed once. Station order ==
+    # driving direction with index 0 at the S/F line (same domain as ver_d).
+    if elev is not None and elev.get("stations"):
+        sta3 = np.asarray(elev["stations"], dtype=float)[::9]      # ~385 pts
+        n3 = len(sta3)
+        _z0 = sta3[:, 2].min()
+        _c0 = sta3[:, :2].mean(axis=0)
+        p3 = np.column_stack([sta3[:, 0] - _c0[0], sta3[:, 1] - _c0[1],
+                              (sta3[:, 2] - _z0) * EL3D_EXAG])
+        _d3 = np.roll(p3[:, :2], -1, axis=0) - np.roll(p3[:, :2], 1, axis=0)
+        _l3 = np.linalg.norm(_d3, axis=1, keepdims=True)
+        _l3[_l3 == 0] = 1.0
+        _n3 = np.column_stack([-_d3[:, 1], _d3[:, 0]]) / _l3
+        e3L = np.column_stack([p3[:, :2] + _n3 * EL3D_HALF_W, p3[:, 2]])
+        e3R = np.column_stack([p3[:, :2] - _n3 * EL3D_HALF_W, p3[:, 2]])
+        b3L = e3L.copy(); b3L[:, 2] = 0.0
+        b3R = e3R.copy(); b3R[:, 2] = 0.0
+        _tz = p3[:, 2] / max(float(p3[:, 2].max()), 1e-6)
+        rib_col = [_el3d_ramp(t) for t in _tz]
+        el3d_tgt = p3[0].copy()
+        el3d_trail = []
+    elif elev is not None:
+        print("[elev] json has no 'stations' — 3D flyover disabled", file=sys.stderr)
+        elev = None
 
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(out_path, fourcc, fps, (WIDTH, HEIGHT))
@@ -986,27 +1004,74 @@ def render_video(outer, inner, raceline, ver_t, ver_d, ver_v_ms, lap_time,
         cv2.circle(frame, (mx, my), 9, dot_col, -1, cv2.LINE_AA)
         cv2.circle(frame, (mx, my), 9, (255, 255, 255), 2, cv2.LINE_AA)
 
-        # Elevation panel: dim full-lap silhouette, driven part in orange,
-        # marker riding the hill.
+        # 3D elevation flyover: drone camera (lagged follow + slow rotation),
+        # painter-sorted solid geometry, rendered to its own canvas then
+        # blended into the bottom of the frame (no grid, no background).
         if elev is not None:
             frac_now = (d_now % max(ver_total_d, 1e-6)) / max(ver_total_d, 1e-6)
-            cv2.fillPoly(frame, [ep_poly_full], EP_FILL_DIM)
-            n_done = int(np.searchsorted(ep_f, frac_now)) + 1
-            if n_done >= 2:
-                done_poly = np.array(
-                    [[EP_X0, EP_Y1]] + list(zip(ep_px[:n_done], ep_py[:n_done]))
-                    + [[int(EP_X0 + frac_now * (EP_X1 - EP_X0)), EP_Y1]],
-                    np.int32)
-                cv2.fillPoly(frame, [done_poly], EP_FILL_DONE)
-            cv2.polylines(frame, [np.column_stack([ep_px, ep_py]).astype(np.int32)
-                                  .reshape((-1, 1, 2))],
-                          False, EP_STROKE, 2, cv2.LINE_AA)
-            ep_mx = int(EP_X0 + frac_now * (EP_X1 - EP_X0))
-            ep_my = int(np.interp(frac_now, ep_f, ep_py))
-            cv2.line(frame, (ep_mx, ep_my - 14), (ep_mx, ep_my - 40),
-                     (200, 200, 200), 1, cv2.LINE_AA)
-            cv2.circle(frame, (ep_mx, ep_my), 9, (255, 255, 255), -1, cv2.LINE_AA)
-            cv2.circle(frame, (ep_mx, ep_my), 9, EP_FILL_DONE, 3, cv2.LINE_AA)
+            _fx = frac_now * n3
+            _i0 = int(_fx) % n3
+            _u = _fx - int(_fx)
+            car3 = p3[_i0] + (p3[(_i0 + 1) % n3] - p3[_i0]) * _u
+            _al = 1.0 - math.exp(-(1.0 / fps) / EL3D_CAM_LAG_S)
+            el3d_tgt += (car3 - el3d_tgt) * _al
+            yaw = (2.0 * math.pi * EL3D_REVS_PER_LAP * t / max(lap_time, 1e-6)
+                   + EL3D_YAW0)
+            _ce, _se = math.cos(EL3D_ELEV_ANGLE), math.sin(EL3D_ELEV_ANGLE)
+            cam3 = el3d_tgt + np.array([math.cos(yaw) * _ce,
+                                        math.sin(yaw) * _ce, _se]) * EL3D_DIST
+            fwd = el3d_tgt - cam3
+            fwd = fwd / max(np.linalg.norm(fwd), 1e-9)
+            rgt = np.cross(fwd, np.array([0.0, 0.0, 1.0]))
+            rgt = rgt / max(np.linalg.norm(rgt), 1e-9)
+            upv = np.cross(rgt, fwd)
+
+            def _proj(V):
+                rel = np.atleast_2d(V) - cam3
+                zc = np.maximum(rel @ fwd, 1.0)
+                sx = WIDTH * 0.5 + EL3D_FOCAL * (rel @ rgt) / zc
+                sy = EL3D_H * 0.52 - EL3D_FOCAL * (rel @ upv) / zc
+                return np.column_stack([sx, sy]), zc
+
+            canvas3 = np.zeros((EL3D_H, WIDTH, 3), dtype=np.uint8)
+            sTL, zTL = _proj(e3L)
+            sTR, zTR = _proj(e3R)
+            sBL, _ = _proj(b3L)
+            sBR, _ = _proj(b3R)
+            quads = []
+            for q in range(n3):
+                q2 = (q + 1) % n3
+                xs = (sTL[q][0], sTL[q2][0], sTR[q][0], sTR[q2][0])
+                ys = (sTL[q][1], sTL[q2][1], sTR[q][1], sTR[q2][1])
+                if (max(xs) < -60 or min(xs) > WIDTH + 60
+                        or max(ys) < -60 or min(ys) > EL3D_H + 60):
+                    continue
+                dq = 0.25 * (zTL[q] + zTL[q2] + zTR[q] + zTR[q2])
+                quads.append((dq + 4.0, np.array(
+                    [sTL[q], sTL[q2], sBL[q2], sBL[q]], np.int32), EL3D_WALL_BGR))
+                quads.append((dq + 4.0, np.array(
+                    [sTR[q], sTR[q2], sBR[q2], sBR[q]], np.int32), EL3D_WALL_BGR))
+                quads.append((dq, np.array(
+                    [sTL[q], sTL[q2], sTR[q2], sTR[q]], np.int32), rib_col[q]))
+            quads.sort(key=lambda x: -x[0])
+            for _, _poly, _col in quads:
+                cv2.fillPoly(canvas3, [_poly], _col)
+            el3d_trail.append(car3.copy())
+            if len(el3d_trail) > EL3D_TRAIL_N:
+                el3d_trail.pop(0)
+            if len(el3d_trail) > 1:
+                tp3, _ = _proj(np.asarray(el3d_trail))
+                cv2.polylines(canvas3, [tp3.astype(np.int32).reshape((-1, 1, 2))],
+                              False, (255, 255, 255), 2, cv2.LINE_AA)
+            cp3, _ = _proj(car3)
+            _cx, _cy = int(cp3[0][0]), int(cp3[0][1])
+            cv2.circle(canvas3, (_cx, _cy), 12, (255, 255, 255), -1, cv2.LINE_AA)
+            cv2.circle(canvas3, (_cx, _cy), 12, EL3D_CAR_RING, 3, cv2.LINE_AA)
+            reg3 = frame[EL3D_Y0:EL3D_Y0 + EL3D_H]
+            _fade = np.linspace(0.0, 1.0, EL3D_FADE)[:, None, None]
+            reg3[:EL3D_FADE] = (reg3[:EL3D_FADE] * (1.0 - _fade)
+                                + canvas3[:EL3D_FADE] * _fade).astype(np.uint8)
+            reg3[EL3D_FADE:] = canvas3[EL3D_FADE:]
 
         # Text overlays
         img_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
@@ -1027,21 +1092,6 @@ def render_video(outer, inner, raceline, ver_t, ver_d, ver_v_ms, lap_time,
         lap_str = f"LAP TIME  {int(_dlt // 60):d}:{_dlt % 60:06.3f}"
         draw_centered(draw, WIDTH // 2, LAP_Y, lap_str, font_sub, (180, 180, 180))
         draw_centered(draw, WIDTH // 2, WATERMARK_Y, WATERMARK_TEXT, font_wm, (150, 150, 150))
-        if elev is not None:
-            alt_now = float(np.interp(frac_now, ep_f, ep_z))
-            grade_now = float(np.interp(frac_now, ep_f, ep_grade))
-            draw.text((EP_X0, EP_Y0 - 34), "TRACK ELEVATION",
-                      font=font_ep_label, fill=(150, 150, 150))
-            g_col = (EP_GRADE_UP_RGB if grade_now > 0.5 else
-                     EP_GRADE_DOWN_RGB if grade_now < -0.5 else (200, 200, 200))
-            val = f"{alt_now:.0f} M   {'+' if grade_now > 0 else ''}{grade_now:.1f}%"
-            vw = draw.textlength(val, font=font_ep_val)
-            draw.text((EP_X1 - vw, EP_Y0 - 40), val, font=font_ep_val, fill=g_col)
-            draw.text((EP_X0, EP_Y1 + 8),
-                      f"{ep_zmin:.0f}-{ep_zmax:.0f} M ASL · SPAN "
-                      f"{ep_zmax - ep_zmin:.0f} M",
-                      font=font_ep_tick, fill=(110, 110, 110))
-
         out.write(cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR))
 
         if (f + 1) % 60 == 0 or f == total_frames - 1:
@@ -1073,9 +1123,11 @@ def main():
                     help="Override the LAP TIME label (seconds); animation timing "
                          "is unchanged. Use to show a realistic 2026 lap time.")
     ap.add_argument("--elevation-json", default=None,
-                    help="Elevation profile from cache/_fetch_elevation.py "
-                         "(dist_frac[]/elev_m[]). Adds the altitude-silhouette "
-                         "panel with live altitude + gradient. Omit = no panel.")
+                    help="Elevation data from cache/_fetch_elevation.py (needs "
+                         "'stations'). Adds the 3D elevation flyover in the "
+                         "bottom third: rotating drone camera loosely following "
+                         "the car, solid extrusion walls, no background. "
+                         "Omit = no flyover.")
     args = ap.parse_args()
 
     elev = None
