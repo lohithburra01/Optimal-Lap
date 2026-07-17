@@ -91,6 +91,23 @@ Full evidence + per-corner tables: `cache/backtest_report.md`. Design rationale:
   IS FP1 — this poisoned Catalunya once), integrated distance vs official length, lap vs known pole.
 - Monaco is isolated (`sim_monaco_2026_lap.py`) — none of this applies there.
 
+## Elevation capability (added 2026-07-16, Spa first)
+Real altitude comes from the OpenF1 `location` z-channel (true m ASL x10; Spa verified:
+365.5-467.6 m, span 102.0 vs documented ~102, closure +0.4 m). Three artifacts per track:
+- `cache/_fetch_elevation.py --track X` → `F1_Pipeline_Assets/tracks/<x>_elevation.json`
+  (dist_frac/elev_m grid + raceline stations lifted to [x,y,z] — Blender-ready 3D model).
+  Validation gates + landmark PNG (`cache/elevation_<x>.png`). Needs the raceline json to
+  exist first. Domain = distance from S/F in driving direction (same as sim csv).
+- `cache/_build_3d_viewer.py --track X --name "..."` → `<x>_elevation_3d.html`: interactive
+  3D ribbon (altitude color ramp, drop curtain, animated optimal-lap car, follow-cam,
+  vertical-exaggeration slider). Fully self-contained: three.js r160 vendored in `vendor/`
+  and embedded as data-URL modules — works offline, double-click to open. Includes an
+  interval fallback for RAF-throttled webviews. New tracks: add the slug to SIM_CSV in
+  the builder.
+- `raceline_video.py --elevation-json <json>`: altitude-silhouette panel in the bottom
+  third (driven part fills orange, marker rides the hill, live altitude + gradient).
+  Wired into make_spa_2026_lap.bat stage 5.
+
 ## State right now / next actions
 - **SHIPPED: Spa** `belgian_grand_prix_2026_optimal_lap.mp4` — 1:41.91 (2025 pole 1:40.562
   +1.35 s), top 343, cda 0.737 / cl 5.355 / rho 1.1764, gate 9/9, overlay corr 0.978 vs 2025,
