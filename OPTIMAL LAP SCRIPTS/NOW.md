@@ -117,8 +117,8 @@ Real altitude comes from the OpenF1 `location` z-channel (true m ASL x10; Spa ve
   (YAW_OFFSET adds a fixed azimuth bias; FOCAL/CY_FRAC size+place the object; ELEV_ANGLE/EXAG
   shape the skyline). Wired into make_spa_2026_lap.bat stage 5.
 - **2D main-view zoom**: `raceline_video.py --zoom N` scales the road ribbon (higher = wider
-  road, car-followed). Spa ships at **26** (was 22). Per-track ~21-26; it does NOT affect the
-  3D band (that has its own EL3D_FOCAL).
+  road, car-followed). Spa ships at **30** (walked up 22→26→30 on user request for a wider
+  road). It does NOT affect the 3D band (separate EL3D_FOCAL).
 
 ## State right now / next actions
 - **SHIPPED: Spa** `belgian_grand_prix_2026_optimal_lap.mp4` — 1:41.91 (2025 pole 1:40.562
