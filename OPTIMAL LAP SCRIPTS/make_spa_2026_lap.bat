@@ -44,7 +44,7 @@ echo === Stage 4: realism gate (predicted bands; 2025 pole 100.562) ===
 if errorlevel 1 goto :err
 
 echo === Stage 5: render video (honest sim lap time on the HUD) ===
-"%PYTHON%" "%ROOT%raceline_video.py" --outline "%OUTLINE%" --raceline "%RACELINE%" --telemetry-csv "%CSV%" --track-name "Belgian Grand Prix" --zoom 22 --elevation-json "%ELEV%" --out "%OUTMP4%"
+"%PYTHON%" "%ROOT%raceline_video.py" --outline "%OUTLINE%" --raceline "%RACELINE%" --telemetry-csv "%CSV%" --track-name "Belgian Grand Prix" --zoom 26 --elevation-json "%ELEV%" --out "%OUTMP4%"
 if errorlevel 1 goto :err
 
 echo.

@@ -1,5 +1,5 @@
 # NOW.md — operating manual for the pre-FP1 2026 optimal-lap pipeline
-(last update 2026-07-16, after shipping Spa pre-FP1. Read this fully before touching anything.)
+(last update 2026-07-17: Spa shipped pre-FP1 + in-video 3D elevation flyover. Read fully before touching anything.)
 
 ## What this project produces
 One vertical video per race weekend: `<track>_2026_optimal_lap.mp4` — a physics-simulated
@@ -106,10 +106,19 @@ Real altitude comes from the OpenF1 `location` z-channel (true m ASL x10; Spa ve
   the builder.
 - `raceline_video.py --elevation-json <json>`: **in-video 3D elevation flyover** in the
   bottom third (the silhouette panel was replaced 2026-07-17 on user direction): software-
-  projected 3D track, sequential-orange altitude ramp, SOLID walls both sides, no background;
-  camera = FIXED orbit around the track center (constant scale), 0.9 rev/lap at 15° skyline angle; HUD compacted + band at rows 1310-1670 = platform-UI safe;
-  the 3D car and the 2D dot share the same telemetry sample per frame (EL3D_* constants).
-  Wired into make_spa_2026_lap.bat stage 5.
+  projected 3D track, sequential-orange altitude ramp, SOLID walls both sides, no background.
+  Camera (final, 2026-07-17): orbit azimuth **locked to the car's own bearing** around the
+  track center — rotates WITH the car, at the car's angular speed, car always on the near
+  side (no watching the empty far side); constant distance = constant scale (no zoom wander),
+  15° skyline angle, EL3D_EXAG 2.6 so highs/lows are the star. HUD compacted (mode 1050 /
+  speed 1112 / lap 1240 / wm 1288); 3D band centered in rows 1310-1670 = above the platform-UI
+  cut zone (whole-lap frame scan clean except a 9px graze at t=0). 3D car and 2D dot share the
+  same telemetry sample per frame. All knobs are `EL3D_*` constants at the top of the file
+  (YAW_OFFSET adds a fixed azimuth bias; FOCAL/CY_FRAC size+place the object; ELEV_ANGLE/EXAG
+  shape the skyline). Wired into make_spa_2026_lap.bat stage 5.
+- **2D main-view zoom**: `raceline_video.py --zoom N` scales the road ribbon (higher = wider
+  road, car-followed). Spa ships at **26** (was 22). Per-track ~21-26; it does NOT affect the
+  3D band (that has its own EL3D_FOCAL).
 
 ## State right now / next actions
 - **SHIPPED: Spa** `belgian_grand_prix_2026_optimal_lap.mp4` — 1:41.91 (2025 pole 1:40.562
