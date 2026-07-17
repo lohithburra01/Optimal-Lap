@@ -104,8 +104,11 @@ Real altitude comes from the OpenF1 `location` z-channel (true m ASL x10; Spa ve
   and embedded as data-URL modules — works offline, double-click to open. Includes an
   interval fallback for RAF-throttled webviews. New tracks: add the slug to SIM_CSV in
   the builder.
-- `raceline_video.py --elevation-json <json>`: altitude-silhouette panel in the bottom
-  third (driven part fills orange, marker rides the hill, live altitude + gradient).
+- `raceline_video.py --elevation-json <json>`: **in-video 3D elevation flyover** in the
+  bottom third (the silhouette panel was replaced 2026-07-17 on user direction): software-
+  projected 3D track, sequential-orange altitude ramp, SOLID walls both sides, no background;
+  drone camera = lagged follow (EMA 2.5 s) + continuous rotation (1.25 rev/lap) at 33°;
+  the 3D car and the 2D dot share the same telemetry sample per frame (EL3D_* constants).
   Wired into make_spa_2026_lap.bat stage 5.
 
 ## State right now / next actions
