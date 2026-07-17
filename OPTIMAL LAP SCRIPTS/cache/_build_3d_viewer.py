@@ -28,6 +28,29 @@ SIM_CSV = {
     "spa": "F1_Pipeline_Assets/exports/spa_2026_synthetic.csv",
 }
 
+VENDOR = os.path.join(REPO_ROOT, "vendor")
+
+
+def importmap() -> str:
+    """Self-contained if vendor/ has three.js (data: URL modules — works
+    offline, double-clickable); CDN fallback otherwise."""
+    import base64
+    three = os.path.join(VENDOR, "three.module.min.js")
+    orbit = os.path.join(VENDOR, "OrbitControls.js")
+    if os.path.exists(three) and os.path.exists(orbit):
+        def durl(p):
+            with open(p, "rb") as f:
+                return ("data:text/javascript;base64,"
+                        + base64.b64encode(f.read()).decode())
+        print("[3d] embedding vendored three.js (fully self-contained)")
+        return json.dumps({"imports": {
+            "three": durl(three),
+            "three/addons/controls/OrbitControls.js": durl(orbit)}})
+    print("[3d] WARNING: vendor/three missing -> CDN importmap (needs internet)")
+    return json.dumps({"imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"}})
+
 TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -79,9 +102,7 @@ TEMPLATE = r"""<!DOCTYPE html>
   <label>elevation ×<span id="exv">2.0</span> <input id="ex" type="range" min="10" max="40" value="20"></label>
   <label><input id="follow" type="checkbox"> follow car</label>
 </div>
-<script type="importmap">{"imports":{
-  "three":"https://unpkg.com/three@0.160.0/build/three.module.js",
-  "three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}</script>
+<script type="importmap">__IMPORTMAP__</script>
 <script type="module">
 import * as THREE from 'three';
 import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
@@ -225,9 +246,10 @@ addEventListener('resize',()=>{cam.aspect=innerWidth/innerHeight;
   cam.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
 renderer.setSize(innerWidth,innerHeight);
 
-let prev=performance.now();
+let prev=performance.now(), rafTicked=false, fallbackTimer=null;
 function frame(now){
-  const dt=(now-prev)/1000; prev=now;
+  rafTicked=true;
+  const dt=Math.min((now-prev)/1000, 0.1); prev=now;
   if(playing){t+=dt*pspd; if(t>T_END)t=0; $('scrub').value=t/T_END*1000;}
   const s=lapAt(t), p=staAt(s.frac), pv=v3(p);
   car.position.copy(pv); halo.position.copy(pv);
@@ -254,9 +276,15 @@ function frame(now){
   }
   controls.update();
   renderer.render(scene,cam);
-  requestAnimationFrame(frame);
+  if(!fallbackTimer) requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
+// Embedded webviews / minimized windows can throttle RAF to zero — keep the
+// lap alive on a timer if no RAF tick lands quickly.
+setTimeout(()=>{ if(!rafTicked){
+  console.warn('RAF throttled: interval fallback');
+  fallbackTimer=setInterval(()=>frame(performance.now()),33);
+}},600);
 </script>
 </body>
 </html>
@@ -292,6 +320,7 @@ def main() -> int:
     mm, ss = divmod(lap_time, 60.0)
 
     html = (TEMPLATE
+            .replace("__IMPORTMAP__", importmap())
             .replace("__NAME__", args.name or args.track.title())
             .replace("__LAPTIME__", f"{int(mm)}:{ss:06.3f}")
             .replace("__SPAN__", str(elev["span_m"]))
