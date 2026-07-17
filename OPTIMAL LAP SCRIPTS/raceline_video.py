@@ -118,6 +118,19 @@ MODE_COLORS = {
     "REGEN":     (255, 230, 0),
 }
 
+# Elevation panel (only when --elevation-json is given): the lap's altitude
+# silhouette in the empty bottom third; the driven portion fills in orange and
+# a marker rides the hill, with live altitude + gradient readout. Data comes
+# from cache/_fetch_elevation.py (real z from F1 position telemetry).
+EP_X0, EP_X1      = 70, WIDTH - 70
+EP_Y0, EP_Y1      = 1560, 1745
+EP_HEADROOM       = 34            # px kept above the highest point for labels
+EP_FILL_DIM       = (46, 42, 38)  # BGR undriven silhouette
+EP_FILL_DONE      = (12, 137, 232)  # BGR driven portion (brand orange)
+EP_STROKE         = (150, 150, 150)
+EP_GRADE_UP_RGB   = (255, 157, 46)
+EP_GRADE_DOWN_RGB = (89, 183, 255)
+
 
 # =============================================================
 # Stage 1: Outline → corridor + widths
@@ -799,7 +812,7 @@ def draw_mode_label(draw, cx, y, mode_str, font):
 def render_video(outer, inner, raceline, ver_t, ver_d, ver_v_ms, lap_time,
                  out_path, track_name, zoom, trail_frames, fps,
                  outer_kerbs=None, inner_kerbs=None, soc=None, mode=None,
-                 display_lap_time=None):
+                 display_lap_time=None, elev=None):
     """ver_t,ver_d,ver_v_ms come from real telemetry. The dot's position at
     video time `t` is found by:  d_at_t = interp(t, ver_t, ver_d), then
     d_at_t is mapped to arc-length on `raceline` (linear scale by ratio of
@@ -856,6 +869,29 @@ def render_video(outer, inner, raceline, ver_t, ver_d, ver_v_ms, lap_time,
     font_wm         = load_font(24, True)
     font_mode_label = load_font(24, True)
     has_mode_hud    = mode is not None
+    font_ep_label   = load_font(22, True)
+    font_ep_val     = load_font(30, True)
+    font_ep_tick    = load_font(18, False)
+
+    # Elevation panel: static pixel silhouette precomputed once. The profile
+    # grid is periodic in lap fraction; pad one wrap point so the polyline
+    # reaches the right edge.
+    if elev is not None:
+        ep_f = np.asarray(elev["dist_frac"], dtype=float)
+        ep_z = np.asarray(elev["elev_m"], dtype=float)
+        ep_f = np.concatenate([ep_f, [1.0]])
+        ep_z = np.concatenate([ep_z, [ep_z[0]]])
+        ep_zmin, ep_zmax = float(ep_z.min()), float(ep_z.max())
+        ep_span = max(ep_zmax - ep_zmin, 1e-6)
+        ep_px = EP_X0 + ep_f * (EP_X1 - EP_X0)
+        ep_py = (EP_Y1 - (ep_z - ep_zmin) / ep_span
+                 * (EP_Y1 - EP_Y0 - EP_HEADROOM))
+        ep_poly_full = np.array(
+            [[EP_X0, EP_Y1]] + list(zip(ep_px, ep_py)) + [[EP_X1, EP_Y1]],
+            np.int32)
+        # gradient % on the same grid (central difference over the lap length)
+        ep_lap_m = float(ver_d[-1])
+        ep_grade = np.gradient(ep_z, ep_f * ep_lap_m) * 100.0
 
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(out_path, fourcc, fps, (WIDTH, HEIGHT))
@@ -950,6 +986,28 @@ def render_video(outer, inner, raceline, ver_t, ver_d, ver_v_ms, lap_time,
         cv2.circle(frame, (mx, my), 9, dot_col, -1, cv2.LINE_AA)
         cv2.circle(frame, (mx, my), 9, (255, 255, 255), 2, cv2.LINE_AA)
 
+        # Elevation panel: dim full-lap silhouette, driven part in orange,
+        # marker riding the hill.
+        if elev is not None:
+            frac_now = (d_now % max(ver_total_d, 1e-6)) / max(ver_total_d, 1e-6)
+            cv2.fillPoly(frame, [ep_poly_full], EP_FILL_DIM)
+            n_done = int(np.searchsorted(ep_f, frac_now)) + 1
+            if n_done >= 2:
+                done_poly = np.array(
+                    [[EP_X0, EP_Y1]] + list(zip(ep_px[:n_done], ep_py[:n_done]))
+                    + [[int(EP_X0 + frac_now * (EP_X1 - EP_X0)), EP_Y1]],
+                    np.int32)
+                cv2.fillPoly(frame, [done_poly], EP_FILL_DONE)
+            cv2.polylines(frame, [np.column_stack([ep_px, ep_py]).astype(np.int32)
+                                  .reshape((-1, 1, 2))],
+                          False, EP_STROKE, 2, cv2.LINE_AA)
+            ep_mx = int(EP_X0 + frac_now * (EP_X1 - EP_X0))
+            ep_my = int(np.interp(frac_now, ep_f, ep_py))
+            cv2.line(frame, (ep_mx, ep_my - 14), (ep_mx, ep_my - 40),
+                     (200, 200, 200), 1, cv2.LINE_AA)
+            cv2.circle(frame, (ep_mx, ep_my), 9, (255, 255, 255), -1, cv2.LINE_AA)
+            cv2.circle(frame, (ep_mx, ep_my), 9, EP_FILL_DONE, 3, cv2.LINE_AA)
+
         # Text overlays
         img_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         draw = ImageDraw.Draw(img_pil)
@@ -969,6 +1027,20 @@ def render_video(outer, inner, raceline, ver_t, ver_d, ver_v_ms, lap_time,
         lap_str = f"LAP TIME  {int(_dlt // 60):d}:{_dlt % 60:06.3f}"
         draw_centered(draw, WIDTH // 2, LAP_Y, lap_str, font_sub, (180, 180, 180))
         draw_centered(draw, WIDTH // 2, WATERMARK_Y, WATERMARK_TEXT, font_wm, (150, 150, 150))
+        if elev is not None:
+            alt_now = float(np.interp(frac_now, ep_f, ep_z))
+            grade_now = float(np.interp(frac_now, ep_f, ep_grade))
+            draw.text((EP_X0, EP_Y0 - 34), "TRACK ELEVATION",
+                      font=font_ep_label, fill=(150, 150, 150))
+            g_col = (EP_GRADE_UP_RGB if grade_now > 0.5 else
+                     EP_GRADE_DOWN_RGB if grade_now < -0.5 else (200, 200, 200))
+            val = f"{alt_now:.0f} M   {'+' if grade_now > 0 else ''}{grade_now:.1f}%"
+            vw = draw.textlength(val, font=font_ep_val)
+            draw.text((EP_X1 - vw, EP_Y0 - 40), val, font=font_ep_val, fill=g_col)
+            draw.text((EP_X0, EP_Y1 + 8),
+                      f"{ep_zmin:.0f}-{ep_zmax:.0f} M ASL · SPAN "
+                      f"{ep_zmax - ep_zmin:.0f} M",
+                      font=font_ep_tick, fill=(110, 110, 110))
 
         out.write(cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR))
 
@@ -1000,7 +1072,19 @@ def main():
     ap.add_argument("--display-laptime", type=float, default=None,
                     help="Override the LAP TIME label (seconds); animation timing "
                          "is unchanged. Use to show a realistic 2026 lap time.")
+    ap.add_argument("--elevation-json", default=None,
+                    help="Elevation profile from cache/_fetch_elevation.py "
+                         "(dist_frac[]/elev_m[]). Adds the altitude-silhouette "
+                         "panel with live altitude + gradient. Omit = no panel.")
     args = ap.parse_args()
+
+    elev = None
+    if args.elevation_json:
+        with open(args.elevation_json, encoding="utf-8") as f:
+            elev = json.load(f)
+        print(f"[elev] {len(elev['dist_frac'])} pts, "
+              f"{elev['alt_min_m']}-{elev['alt_max_m']} m ASL "
+              f"(span {elev['span_m']} m) — {elev.get('source', '?')}")
 
     with open(args.outline, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -1076,7 +1160,8 @@ def main():
         ver_t, ver_d, ver_v, ver_lap,
         out_path, track_name, args.zoom, args.trail_frames, args.fps,
         outer_kerbs=outer_kerbs, inner_kerbs=inner_kerbs,
-        soc=soc, mode=mode, display_lap_time=args.display_laptime
+        soc=soc, mode=mode, display_lap_time=args.display_laptime,
+        elev=elev
     )
 
 

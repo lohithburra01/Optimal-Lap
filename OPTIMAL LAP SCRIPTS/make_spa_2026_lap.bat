@@ -16,6 +16,7 @@ set "RACELINE=%ROOT%F1_Pipeline_Assets\tracks\belgian_grand_prix_raceline.json"
 set "CSV=%ROOT%F1_Pipeline_Assets\exports\spa_2026_synthetic.csv"
 set "REF25=%ROOT%F1_Pipeline_Assets\exports\reference_2025_spa_q.csv"
 set "OUTMP4=%ROOT%belgian_grand_prix_2026_optimal_lap.mp4"
+set "ELEV=%ROOT%F1_Pipeline_Assets\tracks\belgian_grand_prix_elevation.json"
 
 if not exist "%PYTHON%" goto :err_py
 if not exist "%SVG%"    goto :err_svg
@@ -43,7 +44,7 @@ echo === Stage 4: realism gate (predicted bands; 2025 pole 100.562) ===
 if errorlevel 1 goto :err
 
 echo === Stage 5: render video (honest sim lap time on the HUD) ===
-"%PYTHON%" "%ROOT%raceline_video.py" --outline "%OUTLINE%" --raceline "%RACELINE%" --telemetry-csv "%CSV%" --track-name "Belgian Grand Prix" --zoom 21 --out "%OUTMP4%"
+"%PYTHON%" "%ROOT%raceline_video.py" --outline "%OUTLINE%" --raceline "%RACELINE%" --telemetry-csv "%CSV%" --track-name "Belgian Grand Prix" --zoom 22 --elevation-json "%ELEV%" --out "%OUTMP4%"
 if errorlevel 1 goto :err
 
 echo.
