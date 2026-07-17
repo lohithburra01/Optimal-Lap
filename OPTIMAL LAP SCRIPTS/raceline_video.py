@@ -129,19 +129,22 @@ MODE_COLORS = {
 # this view and the dot on the 2D map are the same telemetry sample per frame.
 EL3D_Y0           = 1310              # top row of the viewport on the frame
 EL3D_H            = HEIGHT - EL3D_Y0  # canvas runs to the frame bottom...
-EL3D_CY_FRAC      = 0.30              # ...but content centers in the SAFE part
+EL3D_CY_FRAC      = 0.25              # ...but content centers in the SAFE part
                                       # (rows 1310-1670); below stays black
 EL3D_FADE         = 70                # soft blend rows at the top edge
 EL3D_EXAG         = 2.6               # vertical exaggeration (contrast boost)
 EL3D_HALF_W       = 10.0              # ribbon half width (m, widened for reach)
 EL3D_ELEV_ANGLE   = 0.2618            # 15 deg — low skyline angle: highs/lows pop
-EL3D_REVS_PER_LAP = 0.9               # calm continuous rotation
-EL3D_YAW0         = 0.6109            # 35 deg initial azimuth
+EL3D_YAW_OFFSET   = 0.0               # camera azimuth = car azimuth + this:
+                                      # the orbit turns WITH the car, at the
+                                      # car's angular speed, so the car is
+                                      # always on the near side of the object
 EL3D_DIST         = 3400.0            # FIXED orbit radius around the track
                                       # center: constant scale, no zoom, whole
                                       # circuit framed (drone circles, never dives)
-EL3D_FOCAL        = 1200.0            # focal length in px (sized so the whole
-                                      # object stays inside the safe band)
+EL3D_FOCAL        = 1080.0            # focal length in px (sized so the whole
+                                      # object stays inside the safe band at
+                                      # EVERY yaw of the car-locked orbit)
 EL3D_WALL_BGR     = (8, 23, 42)       # SOLID wall color (deep brown #2A1708)
 EL3D_CAR_RING     = (12, 137, 232)    # orange ring around the white car dot
 EL3D_TRAIL_N      = 40
@@ -914,6 +917,17 @@ def render_video(outer, inner, raceline, ver_t, ver_d, ver_v_ms, lap_time,
         _tz = p3[:, 2] / max(float(p3[:, 2].max()), 1e-6)
         rib_col = [_el3d_ramp(t) for t in _tz]
         el3d_ctr = np.array([0.0, 0.0, float(p3[:, 2].mean())])
+        # Per-station azimuth of the track around the center, unwrapped and
+        # smoothed: the camera yaw follows THIS at the car's position, so the
+        # orbit moves with the car (its direction, its angular speed) and the
+        # local azimuth wiggles of complexes don't jiggle the camera.
+        from scipy.ndimage import gaussian_filter1d as _g1d
+        _phi_raw = np.unwrap(np.arctan2(p3[:, 1], p3[:, 0]))
+        _trend = _phi_raw[0] + (_phi_raw[-1] - _phi_raw[0]) * (
+            np.arange(n3) / max(n3 - 1, 1))
+        el3d_phi = _trend + _g1d(_phi_raw - _trend, 12.0, mode="wrap")
+        _phi_span = 2.0 * math.pi * (1.0 if _phi_raw[-1] >= _phi_raw[0] else -1.0)
+        el3d_phi_ext = np.append(el3d_phi, el3d_phi[0] + _phi_span)
         el3d_trail = []
     elif elev is not None:
         print("[elev] json has no 'stations' — 3D flyover disabled", file=sys.stderr)
@@ -1021,8 +1035,8 @@ def render_video(outer, inner, raceline, ver_t, ver_d, ver_v_ms, lap_time,
             _i0 = int(_fx) % n3
             _u = _fx - int(_fx)
             car3 = p3[_i0] + (p3[(_i0 + 1) % n3] - p3[_i0]) * _u
-            yaw = (2.0 * math.pi * EL3D_REVS_PER_LAP * t / max(lap_time, 1e-6)
-                   + EL3D_YAW0)
+            yaw = float(np.interp(_fx, np.arange(n3 + 1), el3d_phi_ext)) \
+                + EL3D_YAW_OFFSET
             _ce, _se = math.cos(EL3D_ELEV_ANGLE), math.sin(EL3D_ELEV_ANGLE)
             cam3 = el3d_ctr + np.array([math.cos(yaw) * _ce,
                                         math.sin(yaw) * _ce, _se]) * EL3D_DIST
