@@ -1,0 +1,102 @@
+{
+ "albert_park": {
+  "name": "Australian Grand Prix",
+  "country": "Australia",
+  "pole": 82.188
+ },
+ "shanghai": {
+  "name": "Chinese Grand Prix",
+  "country": "China",
+  "pole": 91.678
+ },
+ "bahrain": {
+  "name": "Bahrain Grand Prix",
+  "country": "Bahrain",
+  "pole": 88.769
+ },
+ "sochi": {
+  "name": "Russian Grand Prix",
+  "country": "Russia",
+  "pole": 93.194
+ },
+ "catalunya": {
+  "name": "Spanish Grand Prix",
+  "country": "Spain",
+  "pole": 79.149
+ },
+ "monaco": {
+  "name": "Monaco Grand Prix",
+  "country": "Monaco",
+  "pole": 72.178
+ },
+ "villeneuve": {
+  "name": "Canadian Grand Prix",
+  "country": "Canada",
+  "pole": 71.459
+ },
+ "baku": {
+  "name": "Azerbaijan Grand Prix",
+  "country": "Azerbaijan",
+  "pole": 100.593
+ },
+ "red_bull_ring": {
+  "name": "Austrian Grand Prix",
+  "country": "Austria",
+  "pole": 64.251
+ },
+ "silverstone": {
+  "name": "British Grand Prix",
+  "country": "UK",
+  "pole": 86.6
+ },
+ "hungaroring": {
+  "name": "Hungarian Grand Prix",
+  "country": "Hungary",
+  "pole": 76.276
+ },
+ "spa": {
+  "name": "Belgian Grand Prix",
+  "country": "Belgium",
+  "pole": 102.553
+ },
+ "monza": {
+  "name": "Italian Grand Prix",
+  "country": "Italy",
+  "pole": 94.66
+ },
+ "marina_bay": {
+  "name": "Singapore Grand Prix",
+  "country": "Singapore",
+  "pole": 99.491
+ },
+ "sepang": {
+  "name": "Malaysian Grand Prix",
+  "country": "Malaysia",
+  "pole": 90.076
+ },
+ "suzuka": {
+  "name": "Japanese Grand Prix",
+  "country": "Japan",
+  "pole": 87.319
+ },
+ "americas": {
+  "name": "United States Grand Prix",
+  "country": "USA",
+  "pole": 93.108
+ },
+ "rodriguez": {
+  "name": "Mexican Grand Prix",
+  "country": "Mexico",
+  "pole": 76.488
+ },
+ "interlagos": {
+  "name": "Brazilian Grand Prix",
+  "country": "Brazil",
+  "pole": 68.322
+ },
+ "yas_marina": {
+  "name": "Abu Dhabi Grand Prix",
+  "country": "UAE",
+  "pole": 96.231
+ }
+}

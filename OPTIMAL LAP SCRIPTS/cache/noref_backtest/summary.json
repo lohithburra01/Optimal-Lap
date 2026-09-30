@@ -1,0 +1,93 @@
+[
+ {
+  "track": "austria",
+  "kind26": "FP1",
+  "cda": 0.6602,
+  "cl": 4.9841,
+  "rho": 1.147,
+  "lap_noref": 65.031,
+  "lap_fitted": 65.12,
+  "real26": 67.841,
+  "err_noref_s": -2.81,
+  "err_noref_pct": -4.14,
+  "err_fitted_s": -2.721
+ },
+ {
+  "track": "canada",
+  "kind26": "Q",
+  "cda": 0.6602,
+  "cl": 4.9097,
+  "rho": 1.2235,
+  "lap_noref": 74.308,
+  "lap_fitted": 73.347,
+  "real26": 72.578,
+  "err_noref_s": 1.73,
+  "err_noref_pct": 2.38,
+  "err_fitted_s": 0.769
+ },
+ {
+  "track": "catalunya",
+  "kind26": "Q",
+  "cda": 0.6052,
+  "cl": 4.9097,
+  "rho": 1.2098,
+  "lap_noref": 73.614,
+  "lap_fitted": 73.64,
+  "real26": 75.04,
+  "err_noref_s": -1.426,
+  "err_noref_pct": -1.9,
+  "err_fitted_s": -1.4
+ },
+ {
+  "track": "hungary",
+  "kind26": "Q",
+  "cda": 0.6515,
+  "cl": 4.9841,
+  "rho": 1.1959,
+  "lap_noref": 75.726,
+  "lap_fitted": 76.355,
+  "real26": 77.361,
+  "err_noref_s": -1.635,
+  "err_noref_pct": -2.11,
+  "err_fitted_s": -1.006
+ },
+ {
+  "track": "silverstone",
+  "kind26": "FP1",
+  "cda": 0.6052,
+  "cl": 4.9841,
+  "rho": 1.2075,
+  "lap_noref": 83.819,
+  "lap_fitted": 85.897,
+  "real26": 89.639,
+  "err_noref_s": -5.82,
+  "err_noref_pct": -6.49,
+  "err_fitted_s": -3.742
+ },
+ {
+  "track": "spa",
+  "kind26": "Q",
+  "cda": 0.6052,
+  "cl": 4.9097,
+  "rho": 1.1764,
+  "lap_noref": 101.86,
+  "lap_fitted": 101.906,
+  "real26": 104.48,
+  "err_noref_s": -2.62,
+  "err_noref_pct": -2.51,
+  "err_fitted_s": -2.574
+ },
+ {
+  "track": "zandvoort",
+  "kind26": "Q",
+  "cda": 0.6602,
+  "cl": 4.9255,
+  "rho": 1.2185,
+  "lap_noref": 71.707,
+  "lap_fitted": 71.305,
+  "real26": 71.32,
+  "err_noref_s": 0.387,
+  "err_noref_pct": 0.54,
+  "err_fitted_s": -0.015
+ }
+]

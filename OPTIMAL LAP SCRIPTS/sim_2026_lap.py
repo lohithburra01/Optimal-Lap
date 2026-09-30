@@ -871,19 +871,91 @@ def downforce(v, mode):
     return 0.5 * RHO * cl * v * v
 
 
-def v_grip_static(kappa):
+# ---------------------------------------------------------------------------
+# Banking (TRACK geometry — the frozen 2026 CAR constants are untouched).
+#
+# Resolving forces in the road plane on a bank of angle θ, with aero downforce
+# D normal to the road surface and a = v²|κ|:
+#     perpendicular:  N = m g cosθ + D + m a sinθ
+#     in-plane:       m a cosθ − m g sinθ ≤ μ N
+# giving the lateral-acceleration ceiling
+#     a_max = [ g(μ cosθ + sinθ) + μ D/m ] / (cosθ − μ sinθ)
+# and, substituting D = ½ρ·Cl·v² and a = v²|κ|, the steady-state corner speed
+#     v² = g(μ cosθ + sinθ) / [ |κ|(cosθ − μ sinθ) − μ ρ Cl / (2m) ]
+#
+# At θ = 0 both reduce EXACTLY to the flat forms (cos=1, sin=0), so a track
+# whose outline carries no banking channel is bit-identical to pre-banking.
+# Past the friction angle arctan(1/μ) (≈27° at μ=1.95) the bank alone holds the
+# car and the denominator flips sign — saturate rather than emit a bad root.
+# ---------------------------------------------------------------------------
+BANK_DENOM_FLOOR = 1e-3
+
+# Per-station EFFECTIVE bank angle [rad], aligned with the raceline/κ arrays and
+# rolled with them when the lap origin is anchored to S/F. None => flat track,
+# which takes the exact pre-banking code paths. Set in main() from the outline's
+# optional "banking_deg" channel.
+BANKING_RAD = None
+
+
+def _bank_at(i):
+    """Effective bank angle [rad] at station i (0.0 on a flat/unbanked track)."""
+    if BANKING_RAD is None:
+        return 0.0
+    return float(BANKING_RAD[i])
+
+
+def banking_channel_for_arc(bank_deg, arc, total_len):
+    """Map an outline banking channel onto stations, by ARC fraction [rad].
+
+    `bank_deg` is one value per outline station, uniform in the outline's arc
+    fraction. `arc` is the station arc length in the FINAL, S/F-referenced frame.
+    Sampling by arc fraction (not station index) is what keeps the bump on its
+    corner: the corner positions that authored it are S/F-referenced fractions,
+    so building this before the S/F roll — or off raw index fractions — slides
+    the bank off the corner by a whole sf_idx.
+    """
+    bd = np.asarray(bank_deg, dtype=float)
+    src = np.arange(len(bd)) / len(bd)
+    dst = np.asarray(arc, dtype=float) / max(float(total_len), 1e-9)
+    return np.radians(np.interp(dst, src, bd, period=1.0))
+
+
+def a_lat_max_banked(v, mode, bank_rad=0.0):
+    """Lateral-acceleration ceiling (m/s²) at speed v on a road banked bank_rad.
+    bank_rad=0 → μ_lat·(g + DF/m), the flat friction-circle budget."""
+    if bank_rad == 0.0:
+        return MU_LAT * (G + downforce(v, mode) / MASS_KG)
+    ct, st = math.cos(bank_rad), math.sin(bank_rad)
+    denom = ct - MU_LAT * st
+    if denom <= BANK_DENOM_FLOOR:
+        return 1e4       # bank alone holds the car; grip no longer the limit
+    return (G * (MU_LAT * ct + st) + MU_LAT * downforce(v, mode) / MASS_KG) / denom
+
+
+def v_grip_static(kappa, bank_rad=0.0):
     """Max steady-state cornering speed at a station with curvature κ, using
     the friction circle with active downforce in Corner Mode:
         μ_lat (m·g + 0.5·ρ·Cl·v²) = m·v²·|κ|
         v² = μ_lat g  /  (|κ|  −  μ_lat · 0.5·ρ·Cl / m)
-    If denominator ≤ 0 (long radius), v is effectively unbounded → cap large."""
+    If denominator ≤ 0 (long radius), v is effectively unbounded → cap large.
+    bank_rad > 0 banks the road into the corner (see the derivation above);
+    bank_rad = 0 reproduces the flat formula exactly."""
     k = abs(kappa)
     if k < 1e-6:
         return 300.0   # effectively no corner cap; powertrain decides
-    denom = k - MU_LAT * 0.5 * RHO * CL_CORNER_M2 / MASS_KG
+    if bank_rad == 0.0:
+        denom = k - MU_LAT * 0.5 * RHO * CL_CORNER_M2 / MASS_KG
+        if denom <= 0.0:
+            return 300.0
+        return math.sqrt(MU_LAT * G / denom)
+    ct, st = math.cos(bank_rad), math.sin(bank_rad)
+    lean = ct - MU_LAT * st
+    if lean <= BANK_DENOM_FLOOR:
+        return 300.0
+    denom = k * lean - MU_LAT * 0.5 * RHO * CL_CORNER_M2 / MASS_KG
     if denom <= 0.0:
         return 300.0
-    return math.sqrt(MU_LAT * G / denom)
+    return math.sqrt(G * (MU_LAT * ct + st) / denom)
 
 
 # Trail-braking release. A time-optimal solver brakes at the friction limit for
@@ -925,9 +997,7 @@ def compute_v_brake_backward(v_grip, kappa, arc, track_length_m, n_iters=3):
             # Downforce ~ v^2 then concentrates the hard bite at high-speed entry
             # and eases toward the apex — the real sharp-bite-then-trail signature.
             mode_ip = "CORNER"
-            a_lat_max = MU_LAT * (G + 0.5 * RHO *
-                                  (CL_CORNER_M2 if mode_ip == "CORNER" else CL_STRAIGHT_M2)
-                                  / MASS_KG * v[ip] * v[ip])
+            a_lat_max = a_lat_max_banked(v[ip], mode_ip, _bank_at(ip))
             if a_lat_max <= 0.0:
                 continue
             ratio_sq = min(1.0, (a_lat_used / a_lat_max) ** 2)
@@ -992,7 +1062,7 @@ def _ideal_speed_profile(v_grip, v_brake, kappa, ds, v0):
         vi = v[i]
         mode_here = aero_mode(kappa[i])
         a_lat_used = abs(kappa[i]) * vi * vi
-        a_lat_max = MU_LAT * (G + downforce(vi, mode_here) / MASS_KG)
+        a_lat_max = a_lat_max_banked(vi, mode_here, _bank_at(i))
         ratio_sq = min(1.0, (a_lat_used / max(a_lat_max, 1e-6)) ** 2)
         a_long_grip = MU_LONG * (G + downforce(vi, mode_here) / MASS_KG) * math.sqrt(1.0 - ratio_sq)
         a_long_power = P / (MASS_KG * max(vi, V_FLOOR_MS))
@@ -1244,7 +1314,7 @@ def forward_pass_energy_aware(v_grip, v_brake, kappa, arc, track_length_m,
         mode_arr[i] = chosen
         P_total = _power_for_mode(chosen, v[i])
         a_lat_used = abs(kappa[i]) * v[i] * v[i]
-        a_lat_max = MU_LAT * (G + downforce(v[i], mode_here) / MASS_KG)
+        a_lat_max = a_lat_max_banked(v[i], mode_here, _bank_at(i))
         ratio_sq = min(1.0, (a_lat_used / max(a_lat_max, 1e-6)) ** 2)
         # ACCEL grip uses the driven-axle traction μ (MU_DRIVE < MU_LONG): the
         # friction circle's longitudinal capacity for putting power DOWN, not the
@@ -1302,7 +1372,8 @@ def simulate_lap(raceline, arc, kappa, track_length_m, max_iters=8, tol_v=1.0):
         denom = np.linalg.norm(ab) * np.linalg.norm(bc) * np.linalg.norm(ac)
         kappa_grip[i] = 0.0 if denom < 1e-9 else 2.0 * cross / denom
     kappa_smooth = median_filter(kappa_grip, size=5, mode="wrap")
-    v_grip = np.array([v_grip_static(k) for k in kappa_smooth])
+    v_grip = np.array([v_grip_static(k, _bank_at(i))
+                       for i, k in enumerate(kappa_smooth)])
 
     ds = np.diff(np.concatenate([arc, [track_length_m]]))
     v0 = 60.0   # initial guess, refined by closure
@@ -1628,6 +1699,8 @@ def main():
     print(f"[sim] raceline: {len(raceline)} pts, {total_len:.0f} m, "
           f"|κ|max={np.abs(kappa).max():.4f}")
 
+    global BANKING_RAD
+
     # Anchor the lap origin to the real start/finish line. svg_to_outline put
     # index 0 at the longest-straight proxy (mid-Casino-Straight); roll the
     # raceline so index 0 is the real S/F, then arc/κ/CSV/video all start there.
@@ -1643,6 +1716,23 @@ def main():
         print(f"[sim] reference CSV not found ({args.reference_csv}); lap origin "
               f"left at the svg_to_outline longest-straight proxy", file=sys.stderr)
 
+    # Optional EFFECTIVE banking channel (TRACK geometry, not car physics).
+    # Built AFTER the S/F roll and indexed by ARC fraction, because the corner
+    # positions it encodes (registry s_frac, predicted_<track>.json) are all
+    # S/F-referenced distance fractions — the frame `arc` is in right here.
+    # Building it pre-roll in raw station-index space put the bump a whole
+    # sf_idx upstream (~96 m at Zandvoort), parking it on the straight before
+    # Hugenholtz where it did precisely nothing.
+    # Absent channel => BANKING_RAD stays None => exact pre-banking code paths.
+    bank_deg_raw = data.get("banking_deg")
+    if bank_deg_raw:
+        BANKING_RAD = banking_channel_for_arc(bank_deg_raw, arc, total_len)
+        nz = int(np.count_nonzero(np.abs(BANKING_RAD) > 1e-9))
+        peak_i = int(np.argmax(np.abs(BANKING_RAD)))
+        print(f"[sim] banking: {nz}/{len(BANKING_RAD)} stations banked, peak "
+              f"{np.degrees(np.abs(BANKING_RAD).max()):.2f}° (effective) at "
+              f"arc frac {arc[peak_i] / total_len:.3f}")
+
     os.makedirs(os.path.dirname(os.path.abspath(args.raceline_out)), exist_ok=True)
     with open(args.raceline_out, "w", encoding="utf-8") as f:
         json.dump({
@@ -1650,6 +1740,10 @@ def main():
             "arc_length":     arc.tolist(),
             "kappa":          kappa.tolist(),
             "track_length_m": float(total_len),
+            # post-roll, S/F-aligned: lets a diagnostic check WHERE the bank
+            # actually landed relative to the corner it was meant for.
+            "banking_deg":    ([] if BANKING_RAD is None
+                               else np.degrees(BANKING_RAD).round(4).tolist()),
         }, f)
     print(f"[sim] wrote raceline -> {args.raceline_out}")
 

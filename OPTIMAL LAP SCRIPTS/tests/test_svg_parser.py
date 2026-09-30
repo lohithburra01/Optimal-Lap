@@ -2,6 +2,12 @@ import pytest
 from svg_to_outline import parse_svg_path_d, sample_cubic_bezier, commands_to_polyline
 
 
+def test_shorthand_cubic_reflects_previous_control_in_relative_path():
+    cmds = parse_svg_path_d("m10 10c1 0 2 0 3 0s2 1 3 0z")
+    assert cmds[2] == ("C", [(14.0, 10.0), (15.0, 11.0), (16.0, 10.0)])
+    assert commands_to_polyline(cmds)[-1] == (10.0, 10.0)
+
+
 def test_simple_move_and_close():
     # absolute moveto then close
     cmds = parse_svg_path_d("M 10,20 z")

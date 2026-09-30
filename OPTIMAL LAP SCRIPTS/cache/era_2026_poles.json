@@ -1,0 +1,77 @@
+{
+ "Melbourne": {
+  "country": "Australia",
+  "date": "2026-03-07",
+  "pole": 78.518
+ },
+ "Shanghai": {
+  "country": "China",
+  "date": "2026-03-14",
+  "pole": 92.064
+ },
+ "Suzuka": {
+  "country": "Japan",
+  "date": "2026-03-28",
+  "pole": 88.778
+ },
+ "Miami": {
+  "country": "United States",
+  "date": "2026-05-02",
+  "pole": 87.798
+ },
+ "Montreal": {
+  "country": "Canada",
+  "date": "2026-05-23",
+  "pole": 72.578
+ },
+ "Monte Carlo": {
+  "country": "Monaco",
+  "date": "2026-06-06",
+  "pole": 72.051
+ },
+ "Catalunya": {
+  "country": "Spain",
+  "date": "2026-06-13",
+  "pole": 74.679
+ },
+ "Spielberg": {
+  "country": "Austria",
+  "date": "2026-06-27",
+  "pole": 66.113
+ },
+ "Silverstone": {
+  "country": "United Kingdom",
+  "date": "2026-07-04",
+  "pole": 88.111
+ },
+ "Spa-Francorchamps": {
+  "country": "Belgium",
+  "date": "2026-07-18",
+  "pole": 104.361
+ },
+ "Hungaroring": {
+  "country": "Hungary",
+  "date": "2026-07-25",
+  "pole": 77.207
+ },
+ "Zandvoort": {
+  "country": "Netherlands",
+  "date": "2026-08-22",
+  "pole": 71.163
+ },
+ "Monza": {
+  "country": "Italy",
+  "date": "2026-09-05",
+  "pole": 81.786
+ },
+ "Madring": {
+  "country": "Spain",
+  "date": "2026-09-12",
+  "pole": 91.824
+ },
+ "Baku": {
+  "country": "Azerbaijan",
+  "date": "2026-09-25",
+  "pole": 102.526
+ }
+}

@@ -28,47 +28,93 @@ def _p(rel: str) -> str:
 # kind26: how the 2026 reference lap was set. "Q" laps anchor fits;
 # "FP1" laps are non-push -> validation only, never fitted.
 TRACKS: dict[str, dict] = {
+    # QUARANTINED 2026-09-30: Baku entry came from the rejected GPT run (needs
+    # the GPT-only --drive-ccw engine flag). Kept commented, not deleted.
+    # "baku": dict(
+    #     outline=_p("F1_Pipeline_Assets/tracks/azerbaijan_grand_prix_outline.json"),
+    #     csv25=_p("F1_Pipeline_Assets/exports/reference_2025_baku_q.csv"),
+    #     csv26=_p("F1_Pipeline_Assets/exports/reference_2026_baku_fp1.csv"),
+    #     kind26="FP1", country="Azerbaijan", circuit="Baku",
+    #     altitude_m=-20.0, length_m=6003.0, drive_ccw=True,
+    # ),
     "canada": dict(
         outline=_p("F1_Pipeline_Assets/tracks/canadian_grand_prix_outline.json"),
         csv25=_p("F1_Pipeline_Assets/exports/reference_2025_canada_q.csv"),
         csv26=_p("F1_Pipeline_Assets/exports/reference_2026_canada_q.csv"),
-        kind26="Q", altitude_m=13.0, length_m=4361.0,
+        kind26="Q", country="Canada", altitude_m=13.0, length_m=4361.0,
     ),
     "catalunya": dict(
         outline=_p("F1_Pipeline_Assets/tracks/catalunya_grand_prix_outline.json"),
         csv25=_p("F1_Pipeline_Assets/exports/reference_2025_spain_q.csv"),
         csv26=_p("F1_Pipeline_Assets/exports/reference_2026_spain_q.csv"),
-        kind26="Q", altitude_m=130.0, length_m=4657.0,
+        kind26="Q", country="Spain", altitude_m=130.0, length_m=4657.0,
     ),
     "austria": dict(
         outline=_p("F1_Pipeline_Assets/tracks/austrian_grand_prix.json"),
         csv25=_p("F1_Pipeline_Assets/exports/reference_2025_austria_q.csv"),
         csv26=_p("F1_Pipeline_Assets/exports/reference_2026_austria_fp1.csv"),
-        kind26="FP1", altitude_m=680.0, length_m=4318.0,
+        kind26="FP1", country="Austria", altitude_m=680.0, length_m=4318.0,
     ),
     "silverstone": dict(
         outline=_p("F1_Pipeline_Assets/tracks/british_grand_prix_outline.json"),
         csv25=_p("F1_Pipeline_Assets/exports/reference_2025_silverstone_q.csv"),
         csv26=_p("F1_Pipeline_Assets/exports/reference_2026_silverstone_fp1.csv"),
-        kind26="FP1", altitude_m=150.0, length_m=5891.0,
+        kind26="FP1", country="Great Britain", altitude_m=150.0, length_m=5891.0,
     ),
     "miami": dict(
         outline=None,
         csv25=_p("F1_Pipeline_Assets/exports/reference_2025_miami_q.csv"),
         csv26=_p("F1_Pipeline_Assets/exports/reference_2026_miami_q.csv"),
-        kind26="Q", altitude_m=2.0, length_m=5412.0,
+        kind26="Q", country="United States", altitude_m=2.0, length_m=5412.0,
     ),
     "china": dict(
         outline=None,
         csv25=_p("F1_Pipeline_Assets/exports/reference_2025_china_q.csv"),
         csv26=_p("F1_Pipeline_Assets/exports/reference_2026_china_q.csv"),
-        kind26="Q", altitude_m=4.0, length_m=5451.0,
+        kind26="Q", country="China", altitude_m=4.0, length_m=5451.0,
     ),
     "spa": dict(
         outline=_p("F1_Pipeline_Assets/tracks/belgian_grand_prix_outline.json"),
         csv25=_p("F1_Pipeline_Assets/exports/reference_2025_spa_q.csv"),
+        csv26=_p("F1_Pipeline_Assets/exports/reference_2026_spa_q.csv"),
+        kind26="Q", country="Belgium", altitude_m=420.0, length_m=7004.0,
+    ),
+    "hungary": dict(
+        outline=_p("F1_Pipeline_Assets/tracks/hungarian_grand_prix_outline.json"),
+        csv25=_p("F1_Pipeline_Assets/exports/reference_2025_hungary_q.csv"),
+        csv26=_p("F1_Pipeline_Assets/exports/reference_2026_hungary_q.csv"),
+        kind26="Q", country="Hungary", altitude_m=250.0, length_m=4381.0,
+    ),
+    "zandvoort": dict(
+        outline=_p("F1_Pipeline_Assets/tracks/dutch_grand_prix_outline.json"),
+        csv25=_p("F1_Pipeline_Assets/exports/reference_2025_zandvoort_q.csv"),
+        # real 2026 Q fetched 2026-09-04: lap 71.163 s, integrated 4248 m vs
+        # 4259 official (-0.3%). 7th anchor pair for the transfer.
+        csv26=_p("F1_Pipeline_Assets/exports/reference_2026_zandvoort_q.csv"),
+        # altitude from the measured OpenF1 z-channel (51.0-59.2 m ASL, dunes),
+        # not sea level: rho_isa 1.2244 -> 1.2185.
+        kind26="Q", country="Netherlands", altitude_m=55.0, length_m=4259.0,
+        # The only meaningfully banked corners on the calendar (2021 rebuild).
+        # deg = EFFECTIVE angle fitted by cache/_apply_banking.py --fit, NOT the
+        # surveyed angle (~19 / ~18 deg) — see that script's docstring for why
+        # the surveyed value saturates the closed form at MU_LAT=1.95.
+        banking=[
+            dict(name="T3 Hugenholtz", s_frac=0.185, half_width_frac=0.020, deg=8.62),
+            dict(name="T14 Arie Luyendyk", s_frac=0.810, half_width_frac=0.022, deg=0.45),
+        ],
+    ),
+    "monza": dict(
+        outline=_p("F1_Pipeline_Assets/tracks/italian_grand_prix_outline.json"),
+        csv25=_p("F1_Pipeline_Assets/exports/reference_2025_monza_q.csv"),
         csv26=None,
-        kind26=None, altitude_m=420.0, length_m=7004.0,
+        kind26=None, country="Italy",
+        # Italy hosts TWO GPs in the OpenF1 country index (Imola 2025 Emilia-
+        # Romagna + Monza): every session lookup MUST filter on this or it
+        # silently picks the earlier Imola meeting.
+        circuit="Monza",
+        # placeholder ASL (Parco di Monza ~162 m); re-pin from the measured
+        # OpenF1 z-channel after cache/_fetch_elevation.py, as Zandvoort did.
+        altitude_m=162.0, length_m=5793.0,
     ),
 }
 

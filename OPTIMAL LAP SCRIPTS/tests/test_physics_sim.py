@@ -7,6 +7,7 @@ from sim_2026_lap import (
     extract_peak_decel_g,
     extract_apex_speed_ms,
     detect_clipping_zones,
+    locate_start_finish,
 )
 from sim_2026_lap import (
     MASS_KG, G, RHO, CL_CORNER_M2, CL_STRAIGHT_M2, CDA_CORNER_M2, CDA_STRAIGHT_M2,
@@ -172,6 +173,35 @@ def test_forward_pass_no_corners_full_throttle_accel():
     assert np.all(np.diff(v[1:]) >= -1.5)
     # Should reach a high steady speed before end
     assert v[-1] > 80.0
+
+
+def test_locate_start_finish_anchors_to_reference(tmp_path):
+    # The lap origin must land on the real S/F line, found by cross-correlating
+    # the raceline's curvature against a reference lap whose distance=0 IS the
+    # S/F. Raceline: a uniform circle (uniform arc spacing) whose curvature is a
+    # single Gaussian "corner" bump at frac 0.25. Reference: speed dips at frac
+    # 0.40 of the lap. So the S/F sits at raceline frac 0.25 - 0.40 = 0.85.
+    n = 400
+    ang = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)
+    raceline = np.column_stack([np.cos(ang), np.sin(ang)])
+    off = np.abs(np.arange(n) - n // 4)
+    d_corner = np.minimum(off, n - off)
+    kappa = np.exp(-(d_corner / 12.0) ** 2)        # corner bump at frac 0.25
+
+    m = 500
+    ref_frac = np.arange(m) / m
+    dip = np.exp(-((ref_frac - 0.40) / 0.03) ** 2)
+    speed = 320.0 - 250.0 * dip                    # speed dips at frac 0.40
+    csv_path = tmp_path / "ref.csv"
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        f.write("distance,speed\n")
+        for fr, sp in zip(ref_frac, speed):
+            f.write(f"{fr * 4000.0},{sp}\n")
+
+    sf_idx = locate_start_finish(raceline, kappa, str(csv_path))
+    # Expected S/F at frac 0.85 -> index ~340; allow a few stations of slack.
+    circ = min(abs(sf_idx - 340), n - abs(sf_idx - 340))
+    assert circ <= 8, f"sf_idx={sf_idx}, expected ~340 (circular dist {circ})"
 
 
 def test_forward_pass_clips_when_battery_empty():

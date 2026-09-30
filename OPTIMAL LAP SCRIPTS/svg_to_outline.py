@@ -49,7 +49,8 @@ _PAIRS_PER_CMD = {
 def parse_svg_path_d(d_str):
     """Tokenise an SVG path `d` attribute into a list of (CMD, [(x,y), ...]) tuples
     with all coordinates expanded to absolute. Supports M/m, L/l, H/h, V/v, C/c,
-    Z/z. (Canada uses M/C/Z; Monaco additionally uses H/h and L/l.) Horizontal
+    S/s, Z/z. Shorthand cubics are expanded to C using the reflected prior
+    control point. (Canada uses M/C/Z; Monaco additionally uses H/h and L/l.) Horizontal
     (H/h) and vertical (V/v) linetos are normalised to absolute L segments.
 
     NOTE for callers extracting `d=` from raw SVG text via regex: use the pattern
@@ -58,16 +59,17 @@ def parse_svg_path_d(d_str):
     `d="..."` inside Inkscape id attributes (e.g. id="svg3151") before it ever
     reaches the actual <path d="..."> attribute.
     """
-    tokens = re.findall(r"[MmLlHhVvCcZz]|" + _NUM_RE.pattern, d_str)
+    tokens = re.findall(r"[MmLlHhVvCcSsZz]|" + _NUM_RE.pattern, d_str)
 
     out = []
     cx, cy = 0.0, 0.0          # current point
     sx, sy = 0.0, 0.0          # start of current subpath (for Z)
     i = 0
     last_cmd = None
+    previous_cubic_control = None
     while i < len(tokens):
         tok = tokens[i]
-        if tok in "MmLlHhVvCcZz":
+        if tok in "MmLlHhVvCcSsZz":
             cmd = tok
             i += 1
         else:
@@ -91,6 +93,7 @@ def parse_svg_path_d(d_str):
             out.append(("Z", []))
             cx, cy = sx, sy
             last_cmd = cmd
+            previous_cubic_control = None
             continue
 
         if upper in ("H", "V"):
@@ -105,6 +108,7 @@ def parse_svg_path_d(d_str):
             cx, cy = x, y
             out.append(("L", [(x, y)]))
             last_cmd = cmd
+            previous_cubic_control = None
             continue
 
         n_pairs = _PAIRS_PER_CMD[upper]
@@ -114,6 +118,16 @@ def parse_svg_path_d(d_str):
             if rel:
                 x += cx; y += cy
             coords.append((x, y))
+
+        if upper == "S":
+            reflected = ((2 * cx - previous_cubic_control[0],
+                          2 * cy - previous_cubic_control[1])
+                         if last_cmd is not None and last_cmd.upper() in ("C", "S")
+                         and previous_cubic_control is not None else (cx, cy))
+            coords = [reflected, coords[0], coords[1]]
+            upper = "C"
+
+        previous_cubic_control = coords[1] if upper == "C" else None
 
         # update current point
         cx, cy = coords[-1]
@@ -372,6 +386,48 @@ def find_start_finish_index(kappa, low_thresh=SF_LINE_KAPPA_THRESH):
     return mid
 
 
+# === Track-path selection ==============================================
+
+def _select_track_path_d(text, svg_path):
+    """Return the `d` string of the actual track centerline from raw SVG text.
+
+    A track SVG often carries OTHER `d=` attributes besides the centerline:
+    a <clipPath> rectangle, <pattern> tiles, decorative markers, etc. The old
+    code grabbed the FIRST `d=` it saw — on the Catalunya export that is the
+    clipPath rectangle (`m727.24 720.31h1818.4v763.76...`), not the track, so
+    the whole pipeline scaled a 4-corner box to 4675 m. (Canada/Monaco only
+    had one path, so they were unaffected.)
+
+    Heuristic: parse every `d=`, expand each to a polyline, and keep the one
+    with the MOST points. A hand-drawn track centerline is two-to-three orders
+    of magnitude denser (thousands of bezier-sampled points) than a clip rect
+    or pattern tile (a handful), so point-count separates them cleanly without
+    hard-coding ids. Ties/failures are skipped. See the d= regex note in
+    parse_svg_path_d's docstring (whitespace-anchored to dodge id="...d=...")."""
+    d_strs = re.findall(r'(?:^|\s)d\s*=\s*"([^"]+)"', text)
+    if not d_strs:
+        print(f"[svg_to_outline] no <path d=\"\"> found in {svg_path}", file=sys.stderr)
+        sys.exit(2)
+    best_d, best_n, best_i = None, -1, -1
+    for i, d in enumerate(d_strs):
+        try:
+            poly = commands_to_polyline(parse_svg_path_d(d), BEZIER_SAMPLES_PER_SEG)
+        except Exception as e:                       # noqa: BLE001 — skip unparseable
+            print(f"[svg_to_outline]   path[{i}] skipped ({type(e).__name__}: {e})")
+            continue
+        n = len(poly)
+        print(f"[svg_to_outline]   path[{i}]: {n} pts  head={d[:24]!r}")
+        if n > best_n:
+            best_d, best_n, best_i = d, n, i
+    if best_d is None:
+        print(f"[svg_to_outline] no parseable <path> in {svg_path}", file=sys.stderr)
+        sys.exit(2)
+    if len(d_strs) > 1:
+        print(f"[svg_to_outline] selected path[{best_i}] as track centerline "
+              f"({best_n} pts, the densest of {len(d_strs)} paths)")
+    return best_d
+
+
 # === Main entry point ===================================================
 
 def build_outline_from_svg(svg_path, track_length_m=TRACK_LENGTH_M,
@@ -384,12 +440,9 @@ def build_outline_from_svg(svg_path, track_length_m=TRACK_LENGTH_M,
     (Monaco's hairpin); 0 (default) disables it, leaving Canada/Miami unchanged."""
     with open(svg_path, encoding="utf-8") as f:
         text = f.read()
-    m = re.search(r'(?:^|\s)d\s*=\s*"([^"]+)"', text)
-    if m is None:
-        print(f"[svg_to_outline] no <path d=\"\"> found in {svg_path}", file=sys.stderr)
-        sys.exit(2)
+    d_str = _select_track_path_d(text, svg_path)
 
-    cmds = parse_svg_path_d(m.group(1))
+    cmds = parse_svg_path_d(d_str)
     raw_poly = np.asarray(commands_to_polyline(cmds, BEZIER_SAMPLES_PER_SEG))
     print(f"[svg_to_outline] raw polyline: {len(raw_poly)} points")
 

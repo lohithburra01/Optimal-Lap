@@ -1,5 +1,58 @@
+# >>> CURRENT STATE (2026-09-30) - read this block first <<<
+- The Baku 2026 work (09-24/25) was done by a GPT agent and is REJECTED by the user. Never use it.
+  Its engine edits are quarantined in _quarantine_gpt_baku_2026-09-25/ (copies; never delete anything).
+- Engine restored to committed HEAD + banking physics; proven bit-identical on Zandvoort.
+  The Madring section below was a Codex-started run finished via cache/_madring_* scripts only.
+- THIS WEEK: "Bahrain GP" is held at SEPANG (OpenF1: country Bahrain, circuit "Kuala Lumpur", FP1 2026-10-02).
+  Sepang shipped pre-FP1 via the NO-REFERENCE method: see cache/sepang_2026_noref.md + make_sepang_2026_lap.bat.
+  Video malaysian_grand_prix_2026_optimal_lap.mp4, lap 1:31.804, zoom 18 (user: 0.6x of 30), no elevation (user OK).
+  Next: Sepang FP1 verification (+elevation, S/F re-pin), then Bahrain (Sakhir) video via the normal
+  pre-FP1 pipeline (2025 Q ref exists; 2026 pre-season testing was also at Sakhir).
+
 # NOW.md — operating manual for the pre-FP1 2026 optimal-lap pipeline
-(last update 2026-07-17: Spa shipped pre-FP1 + in-video 3D elevation flyover. Read fully before touching anything.)
+(last update 2026-08-20: Zandvoort shipped pre-FP1 + banking capability. Read fully before touching anything.)
+
+## Active session update — 2026-09-11: Madring
+- **FP1 elevation preview VERIFIED COMPLETE:** `madring_2026_FP1_ELEVATION_PREVIEW.mp4`,
+  exit0; 1080x1920,30fps,2823frames; sampled frames and final frame decoded and inspected.
+  Preferred interactive deliverable: `madring_fp1_elevation_3d_overview.html` (browser-verified).
+  Actual Russell FP1 replay94.077s; **not the final simulated optimal lap**. Next calibration
+  evidence: baseline speed corr0.9483, with local deficits around44%,61%,79% of lap; do not
+  raise CL globally to hide them. Full current evidence in the report linked below.
+- **LATEST: user now authorizes Madring practice data and wants the 3D ELEVATION flyover,
+  not the banking panel.** This supersedes the original pre-session-only scope for this track.
+- FP1 obtained from Formula 1's official archive via FastF1 (`backend="f1timing"`, caching
+  disabled with `Cache.set_disabled()`): Russell lap 20, 94.077 s; reference CSV
+  `F1_Pipeline_Assets/exports/reference_2026_madring_fp1.csv`. OpenF1 still gave live-lockout 401;
+  FP2 had no published archive path at the latest check. Do not repeat the old blanket claim
+  that FastF1 is unusable: this current FP1 archive extraction succeeded.
+- Read `cache/madring_fp1_elevation_2026-09-11.md` for current data/provenance, aligned S/F,
+  artifacts and next steps. FP1 XY registers well (9.18 m RMS); origin is station2590/2665.
+- Measured relative elevation: raw span24.6 m, smoothed23.98 m. Absolute datum is unverified;
+  label height ABOVE LOW POINT, not ASL. Interactive overview is
+  `madring_fp1_elevation_3d_overview.html`; video `madring_2026_FP1_ELEVATION_PREVIEW.mp4`
+  is an actual-FP1 reference preview, not a calibrated optimal lap. Check its render log
+  and the current report's final verification before treating the video as completed.
+- **Madring is now active. Monza is set aside.** Older Monza state below is retained as history.
+- **User constraint: never delete anything.** Preserve all existing files and unrelated work.
+- Read `cache/madring_bringup_2026-09-11.md` for full SVG provenance, verification, and next steps.
+- User SVG `Madring_(2026).svg` passes density screening (379 segments / 22 turns). Provisional
+  outline `F1_Pipeline_Assets/tracks/madring_grand_prix_outline_provisional.json` built at 5414 m
+  using the current F1 guide; measured perimeter 5408.9 m. Simple, non-crossing edges and valid
+  corridor verified with Shapely; provisional 12 m base width narrows locally to 9.69 m.
+- Verified default-knob, UNBANKED geometry probe completed exit 0: 97.537 s, v 70–312 km/h,
+  sanity passed; all 2665 raceline points on track. This is **not a calibrated prediction**.
+  Outputs/log: `cache/madring_geometry_verified*`; previews `_verify_madring_provisional.png`
+  and `_ontrack_madring_provisional.png`. Original interrupted probe files also retained.
+- Next: verify final layout/direction/real S/F, resolve widths, map La Monumental banking,
+  set altitude/rho, and implement/validate a no-2025-reference calibration method. Existing
+  predictor/autofit/gate depend on a 2025 lap; the proposed Madring fallback is not built.
+- **Madring banking is 24% slope (~13.5 degrees), not 24 degrees.** The Zandvoort-only banking
+  statement below is historical. Existing model angles are EFFECTIVE, so physical angle
+  must not silently be treated as calibrated. Current probe has no banking or elevation.
+- **No-ref simulation trap:** explicitly pass a confirmed nonexistent Madring reference path;
+  omission defaults to Canada telemetry. Current S/F remains an unverified straight proxy.
+- No pipeline code or shared calibration files changed during this SVG bring-up.
 
 ## What this project produces
 One vertical video per race weekend: `<track>_2026_optimal_lap.mp4` — a physics-simulated
@@ -12,8 +65,8 @@ Per-track car knobs (CDA = straight-line drag, CL = corner downforce, RHO = air 
 are PREDICTED from data that exists pre-weekend:
 1. the track's own **2025 quali lap** (OpenF1) → where the real car braked, cornered, topped out;
 2. an **empirical 2025→2026 transfer** fitted from tracks where we hold BOTH years' real laps:
-   corner-speed ratio r(v25) (monotone, ~0.975 at 80 km/h → ~0.904 at 200+), top-speed delta
-   (mean +4.7 km/h), lap-delta band (mean +2.55% sd 1.61);
+   corner-speed ratio r(v25) (monotone; 7-pair fit 2026-09-04: 0.967 at 80 km/h → 0.926 at
+   200+), top-speed delta (mean +2.4 km/h), lap-delta band (mean +2.99% sd 1.29);
 3. a closed-loop **autofit** that runs the sim until it hits the predicted targets, with a hard
    rail: lap must be > 2025 pole + 0.8 s (a 2026 car can NEVER beat 2025 — non-negotiable).
 Proof = **leave-one-out backtest**: fit the transfer without a track, predict it blind, score
@@ -54,6 +107,17 @@ Full evidence + per-corner tables: `cache/backtest_report.md`. Design rationale:
   ⚠️ FastF1 (`fetch_fastest_lap.py`) livetiming is BROKEN since ~2026-07-10 — don't burn time on it.
 - `svg_to_outline.py --svg F --out J --track-length L --road-width W --min-corner-radius 9.0`
   + verify with `cache/_verify_outline.py <outline.json>` (pinch check + PNG).
+- `cache/_svg_density.py <svg> --track-length M --turns N` (or `--table`) — SCREEN a
+  candidate SVG before building on it. Verdict runs on **Bezier segments per TURN**, not
+  per km: seg/km penalises straight-heavy circuits (Monza is 74% straight, so a faithful
+  Monza scores badly on it) while corners are the actual failure mode. Anchors from this
+  repo's own outcomes: Catalunya-2021 12.7, Spa 5.6, Canada 5.2, Zandvoort 4.4, Hungary
+  3.7 = every clean ship; Catalunya-2023 2.6 needed two global car-constant fixes;
+  Silverstone 1.9 was the weakest ship (corr 0.945). GOOD >=3.5, MARGINAL >=2.4.
+  It RANKS, it does not decide — confirm a marginal candidate with the geometry probe
+  in recipe step 1.
+- `cache/_fetch_when_open.py [--minutes N --every S]` — waits out OpenF1's live-session
+  lockout, then pulls the queued refs and prints lap time + integrated distance for each.
 - `raceline_video.py --outline .. --raceline .. --telemetry-csv .. --track-name ".." --zoom N
   --out X.mp4` — render. HONEST sim lap time on the HUD; `--display-laptime` exists but is
   a last resort the user must ask for.
@@ -65,7 +129,15 @@ Full evidence + per-corner tables: `cache/backtest_report.md`. Design rationale:
 ## Per-weekend recipe (returning track, ~1h mostly compute)
 1. Get the DENSEST circuit SVG you can (Inkscape/Wikimedia style, thousands of path points —
    Spa's 21 KB/4136-pt SVG scored far better than hand-drawn 2 KB ones; SVG quality is the #1
-   accuracy lever). Drop in repo root.
+   accuracy lever). Drop in repo root, then SCREEN it: `python cache/_svg_density.py <svg>
+   --track-length M --turns N` — want **>=3.5 Bezier segments/TURN**, and a stroked
+   `fill:none` centreline rather than a filled road ribbon. Byte size is a poor proxy both
+   ways (Canada's 2.7 KB SVG is 16.7 seg/km; Monza's 10.2 KB one is 4.7).
+   GEOMETRY PROBE for a marginal candidate, no network needed: build the outline, list the
+   curvature-peak radii in track order, and run `sim_2026_lap.py` with DEFAULT knobs
+   (`--reference-csv` is optional) — a chicane circuit must show PAIRED tight radii, and the
+   default-knob lap / min speed / tightest line radius rank two candidates decisively.
+   Do all of this BEFORE predict/autofit, not after.
 2. Add the registry entry (outline path under F1_Pipeline_Assets/tracks/, csv25 name, csv26=None,
    altitude_m, official length_m). Fetch the 2025 Q ref via fetch_openf1_lap.py; verify the
    printed lap time vs the known 2025 pole and distance ≈ official ±2%.
@@ -90,6 +162,31 @@ Full evidence + per-corner tables: `cache/backtest_report.md`. Design rationale:
 - Check every ref CSV's provenance: fetch date vs session date (a "q" file fetched before quali
   IS FP1 — this poisoned Catalunya once), integrated distance vs official length, lap vs known pole.
 - Monaco is isolated (`sim_monaco_2026_lap.py`) — none of this applies there.
+- **A one-directional corner-speed deficit is NOT automatically a CL problem.** Check the
+  per-corner spread first: if a FEW ADJACENT corners carry the whole median error while the
+  rest are fine, it is localized geometry/physics, and raising CL just inflates the healthy
+  corners to hide it. At Zandvoort 5 of 8 corners were within ±7.4 while three adjacent early
+  ones were −20/−29/−50. Also remember the backward brake pass PROPAGATES a wrong apex
+  upstream: fixing Hugenholtz alone moved Gerlach +16 km/h with no change of its own.
+
+## Banking (added 2026-08-20, Zandvoort only)
+Zandvoort is the only meaningfully banked track on the calendar. Banking is **TRACK geometry**,
+so it lives on the outline (optional per-station `banking_deg`), NOT in the frozen car physics.
+- `cache/_apply_banking.py --track X [--fit|--clear]` — writes the channel from the registry's
+  `banking=[...]` spec (raised-cosine bumps). `--fit` solves the effective angle from the
+  corner's predicted apex target and prints the registry block to paste back.
+- Lateral limit: `v² = g(μcosθ+sinθ) / [|κ|(cosθ−μsinθ) − μρCl/2m]`, which at θ=0 reduces
+  EXACTLY to the flat form ⇒ **tracks with no channel are bit-identical** (proven by
+  exact-equality tests). `tests/test_banking.py`, 27 tests.
+- ⛔ **The angles are EFFECTIVE, not surveyed.** MU_LAT 1.95 is aero-inclusive and its friction
+  angle arctan(1/μ) is only ~27°, so the surveyed ~19° saturates the closed form (corner stops
+  binding, 6.85× gain). Fitted: Hugenholtz **8.62°**, Luyendyk **0.45°**.
+- ⛔ **Banked corners become FITTED, not predicted** — they stop being independent validation
+  stations. Always report the unbanked-only corner median as the honest check (Zandvoort:
+  unbanked-6 −5.1 vs all-8 −5.5, so the gate is not being carried by the fitted corners).
+- ⛔ The channel is indexed by **S/F-referenced ARC fraction and built AFTER the S/F roll**
+  (`banking_channel_for_arc`). Building it pre-roll off station-index fractions slides the bump
+  a whole sf_idx upstream (~96 m) onto the straight, where it silently does nothing.
 
 ## Elevation capability (added 2026-07-16, Spa first)
 Real altitude comes from the OpenF1 `location` z-channel (true m ASL x10; Spa verified:
@@ -116,23 +213,85 @@ Real altitude comes from the OpenF1 `location` z-channel (true m ASL x10; Spa ve
   same telemetry sample per frame. All knobs are `EL3D_*` constants at the top of the file
   (YAW_OFFSET adds a fixed azimuth bias; FOCAL/CY_FRAC size+place the object; ELEV_ANGLE/EXAG
   shape the skyline). Wired into make_spa_2026_lap.bat stage 5.
+- ⛔ `--banking-json` **REPLACES** the 3D elevation band with the Zandvoort banking
+  cross-section panel. Elevation is the default look; pass banking ONLY on a genuinely
+  banked track. Monza and every other flat circuit: `--elevation-json` only.
 - **2D main-view zoom**: `raceline_video.py --zoom N` scales the road ribbon (higher = wider
   road, car-followed). Spa ships at **30** (walked up 22→26→30 on user request for a wider
   road). It does NOT affect the 3D band (separate EL3D_FOCAL).
 
 ## State right now / next actions
-- **SHIPPED: Spa** `belgian_grand_prix_2026_optimal_lap.mp4` — 1:41.91 (2025 pole 1:40.562
-  +1.35 s), top 343, cda 0.737 / cl 5.355 / rho 1.1764, gate 9/9, overlay corr 0.978 vs 2025,
-  a(v) in family. Committed through `412e312`.
-- **Fri 2026-07-17, after FP1 ENDS (~1h after start): VERIFICATION ONLY — do not recalibrate.**
-  `python fetch_openf1_lap.py --year 2026 --country Belgium --session "Practice 1" --out F1_Pipeline_Assets/exports/reference_2026_spa_fp1.csv`
-  then `_overlay_speed.py` sim vs it. Expect FP1 ≈ sim +2..3.5 s (FP1 runs ~+3.2% over its Q),
-  corr ≥ 0.95. Watch items (in backtest_report.md §Spa): Eau Rouge flat vs lift; gain@220-260;
-  drop@140-180. Write the verdict into the report. If something is BADLY off (>1.5 s the wrong
-  way, corr < 0.9), diagnose layer-by-layer (geometry → targets → fit), don't twiddle constants.
-- **Next track: Hungaroring (weekend of 2026-07-24)** — needs only an SVG + registry entry
-  (length 4381 m, altitude ~250 m); then the recipe above. After its quali: add Spa AND Hungary
-  2026 Q refs as transfer pairs.
+- **IN PROGRESS: Monza (Italian GP, weekend of 2026-09-04)** — bring-up started 2026-09-04.
+  Registry entry `monza` added (italian_grand_prix_*, 5793 m verified, altitude 162 m
+  PLACEHOLDER to re-pin from the z-channel, `circuit="Monza"`). `make_monza_2026_lap.bat`
+  written (stages 0-6, **elevation flyover, no banking** — user's explicit call).
+  **SVG settled: `Monza_track_map.svg`** (10229 B, 27 cubic segments, stroked centreline,
+  2.5 seg/turn = MARGINAL/Catalunya-2023 level). A first candidate at 2.2 seg/turn was
+  rejected on the geometry probe. Outline built + `_verify_outline` clean: perimeter 5792.1 m
+  vs 5793 official, width med 14.0 / min 11.31, no pinch. Default-knob geometry probe:
+  lap 78.30 s, v [87, 326], tightest line radius 21.4 m, radii show the chicane pairs
+  (23/23, 17/20, 10/15). Still waiting on: (a) OpenF1 — see lockout below; (b) POLE25 in the
+  batch is deliberately EMPTY until the 2025 ref is fetched (the run aborts rather than guess
+  the gate rail).
+- ⛔ **Monza's autofit ABORTS on the stock seed — use a low-downforce seed.** With the
+  predicted seed (cda0 0.75 / cl0 4.6) iteration 0 sanity-fails
+  (`DROP rate median 65.4 outside [28,60]`) and `_autofit_2026.py` gives up before exploring
+  anything (`ABORT: initial knobs already unphysical`). The fix is a per-track SEED, not a
+  physics edit and NOT a widened band: copy `predicted_monza.json`, lower `cda0`/`cl0`, and
+  pass it via `--targets`.
+- **The band was NOT too narrow — that guess was wrong, and the audit is how we know.**
+  New tool `cache/_drop_rate_audit.py "csv::label" ...` reproduces assert_sanity's exact
+  statistic (30 fps resample, 0.5 s window, median |rate| over braking samples) on ANY csv,
+  so a sim value can be judged against REAL traces instead of argued about. Measured
+  2026-09-04: REAL Monza 2025 Q **41.8** — mid-pack in a real spread of 29.3-43.3 (Zandvoort
+  32.9, China 29.3, Miami 35.0, Hungary 37.2, Spa 41.7, Canada 43.3). Only Monza's drop_p90
+  (135.8) leads the calendar, i.e. the most violent PEAK braking but an ordinary median.
+  Shipped sims run ~+8-9 over their own real trace (Zandvoort sim 42.0 vs real 32.9, Spa
+  49.8 vs 41.7), so a healthy Monza sim should land near **50**, not 66. Braking is
+  aero-assisted and the force scales with v²·CL, and Monza carries the calendar's highest
+  entry speeds, so a generic wing over-brakes THERE specifically — the same seed that also
+  capped the sim at 332 km/h against a real 348.
+- ⛔ **OpenF1 401s EVERYTHING while any F1 session is live** — historical endpoints included
+  ("Live F1 session in progress... restricted to authenticated users until the session ends").
+  On a race Friday the whole fetch layer is down, not just the live session. `cache/
+  _fetch_when_open.py [--minutes N --every S]` polls and then pulls 2025 Monza Q + 2026
+  Zandvoort Q, printing lap time + integrated distance vs official for provenance.
+- **General fix (helps every multi-GP country):** `cache/_fetch_elevation.py` took
+  `sessions[0]` with no circuit filter — for Italy that is IMOLA, not Monza. It now honours
+  the registry's `circuit` key / a `--circuit` flag and aborts on an ambiguous set.
+- **Watch item for Monza's 3D band:** Monza is nearly flat (a few m of span vs Spa's 102).
+  EL3D_EXAG 2.6 was tuned on Spa; expect to raise it for Monza or the flyover reads as a
+  pancake. Decide after `_fetch_elevation.py` prints the real span.
+- **Still pending from the Zandvoort weekend:** add its 2026 Q as csv26/kind26="Q" and refit
+  the transfer (6 -> 7 pairs) BEFORE Monza's predict/autofit. The fetch is queued in
+  `_fetch_when_open.py`; the registry edit + `_transfer_2026.py` rerun are not done yet.
+- **SHIPPED: Zandvoort** `dutch_grand_prix_2026_optimal_lap.mp4` — **1:11.31** (2025 pole
+  1:08.662 +2.64 s = +3.95%), top 331, cda 0.563 / cl 4.968 / rho 1.2185, **gate 9/9**,
+  overlay corr 0.967 vs 2025, a(v) in family. First track to use BANKING (see below).
+  Full evidence + residuals + FP1 watch items: `cache/backtest_report.md` §Zandvoort.
+- **Fri 2026-08-21, after FP1 ENDS: VERIFICATION ONLY — do not recalibrate.**
+  `python fetch_openf1_lap.py --year 2026 --country Netherlands --session "Practice 1" --out F1_Pipeline_Assets/exports/reference_2026_zandvoort_fp1.csv`
+  then `_overlay_speed.py` sim vs it. Expect FP1 ≈ sim +2..3.5 s, corr ≥ 0.95. The three watch
+  items are in the report; **Tarzan (frac 0.077, sim −20.7 vs target) is the #1 question** —
+  it decides whether the SVG or the 2025-derived target is wrong.
+- **Transfer now has 7 Q pairs** (Zandvoort 2026 Q added 2026-09-04): canada, catalunya,
+  miami, china, spa, hungary, zandvoort; austria + silverstone stay FP1 validation-only.
+  lap_delta +2.83%→**+2.99%** sd 1.33→**1.29**; vtop delta mean **+2.4 km/h**; r(v25) high-speed
+  end **0.904→0.926** (2026 corner speeds are closer to 2025 than the 6-pair fit thought —
+  matters most on fast circuits). All pairing rates ≥0.86, no abort.
+- ✅ **THE 6-PAIR CORRECTION IS PROVEN.** Zandvoort was the first ship fitted with it, and its
+  real 2026 quali (fetched 2026-09-04, lap_duration **71.163 s**, 4248 m integrated vs 4259
+  official −0.3%) lands **+0.15 s from our pre-FP1 sim of 71.31 s — a 0.2% error, the best
+  pre-FP1 result to date.** Prior ships under the optimistic 4-pair fit both came in FAST:
+  Spa 1:41.91 vs real 1:44.361 (−2.46 s), Hungary 1:16.36 vs real 1:17.207 (−0.85 s). The
+  "watch that the autofit doesn't land on the fast edge" concern is now evidence-backed as
+  ADDRESSED, not merely suspected. Zandvoort's own pair: vtop 326→315 (−10.5), lap +3.97%.
+- **Hungary shipped 2026-07-23** (`hungarian_grand_prix_2026_optimal_lap.mp4`, cda 0.614 /
+  cl 4.789 / rho 1.1959, lap 76.355) but was never written up here. Its Spa-FP1 verification
+  step (2026-07-17) was also never run — that window has passed; the 2026 Q refs now serve
+  the same purpose.
+- **Next: after Zandvoort quali (Sat 2026-08-22)** add its 2026 Q as csv26/kind26="Q" →
+  7 pairs. Then the next calendar track needs only an SVG + registry entry.
 - **Unbuilt tier-2 case:** brand-new circuits (Madring, Sept) have no 2025 lap — spec'd as
   physics-inversion-only fallback, not implemented. Decide when it gets close.
 
