@@ -21,3 +21,10 @@ After FP1 (Fri 2026-10-02): OpenF1 lists it as country "Bahrain", circuit "Kuala
   python fetch_openf1_lap.py --year 2026 --country Bahrain --circuit "Kuala Lumpur" --session "Practice 1" --out F1_Pipeline_Assets/exports/reference_2026_sepang_fp1.csv
   then _overlay_speed.py (corr >= 0.95), expect FP1 ~ +3% over eventual Q. VERIFY only; add elevation
   (cache/_fetch_elevation.py) + re-pin S/F from that data, re-render with --elevation-json.
+
+T1 line fix (2026-09-30, user spotted the car running wide at T1): optimiser line never reached the
+T1 inside kerb (closest 3.8 m centre). cache/_sepang_t1_apex.py pulls the late apex to 1.2 m with a
+60 m raised-cosine taper (sweep: H30 92.006, H45 91.913, H60 91.772, asym 90/55 91.808); simulated
+via the new opt-in `sim_2026_lap.py --raceline-in` (default path re-proved bit-identical on
+Zandvoort). SHIPPED 1:31.772: T1 apex 121->122, T2 min 88->91 km/h, gate 6/6, 0 off-track.
+Engine-wide fix (optimiser is min-curvature, not min-time, at hairpin combos) deferred: needs backtest.

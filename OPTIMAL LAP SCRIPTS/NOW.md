@@ -5,7 +5,7 @@
   The Madring section below was a Codex-started run finished via cache/_madring_* scripts only.
 - THIS WEEK: "Bahrain GP" is held at SEPANG (OpenF1: country Bahrain, circuit "Kuala Lumpur", FP1 2026-10-02).
   Sepang shipped pre-FP1 via the NO-REFERENCE method: see cache/sepang_2026_noref.md + make_sepang_2026_lap.bat.
-  Video malaysian_grand_prix_2026_optimal_lap.mp4, lap 1:31.804, zoom 18 (user: 0.6x of 30), no elevation (user OK).
+  Video malaysian_grand_prix_2026_optimal_lap.mp4, lap 1:31.772 (T1 late-apex FITTED edit), zoom 18 (user: 0.6x of 30), no elevation (user OK).
   Next: Sepang FP1 verification (+elevation, S/F re-pin), then Bahrain (Sakhir) video via the normal
   pre-FP1 pipeline (2025 Q ref exists; 2026 pre-season testing was also at Sakhir).
 

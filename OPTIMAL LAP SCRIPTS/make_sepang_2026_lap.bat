@@ -6,6 +6,8 @@ rem cda 0.6139, cl 4.97), ISA rho @ ~40 m. Validated two ways (cache/sepang_2026
 rem   A) cache/_noref_backtest.py - fleet-median sim vs real 2026 Q, sd ~2.1%%
 rem   B) cache/_era_ratio_2017_2026.py - 2017 pole x 2017->2026 ratio = 1:31.4 +/- 0.8
 rem Inset 0.5 m keeps the line on-track at the T9 hairpin (inset 0 cut the apex 0.67 m).
+rem Stage 2b: optimiser ran T1 wide (3.8 m off the inside kerb); cache/_sepang_t1_apex.py
+rem pulls the late apex onto the kerb (1.2 m centre gap, 60 m taper) -> 1:31.772, T2 88->91 km/h.
 setlocal
 set "ROOT=%~dp0"
 set "PYTHON=C:\Users\91910\AppData\Local\Programs\Python\Python310\python.exe"
@@ -17,7 +19,12 @@ if not exist "%PYTHON%" (echo ERROR: Python not found at %PYTHON% & exit /b 1)
 echo === Stage 1: SVG -^> outline ===
 "%PYTHON%" "%ROOT%svg_to_outline.py" --svg "%ROOT%Sepang.svg" --out "%OUTLINE%" --track-length 5543 --road-width 16.0 --min-corner-radius 9.0 || exit /b 1
 echo === Stage 2: sim (fleet-median knobs, no reference lap) ===
-"%PYTHON%" "%ROOT%sim_2026_lap.py" --outline "%OUTLINE%" --raceline-out "%RACELINE%" --csv-out "%CSV%" --reference-csv NONE --inset 0.5 --cda 0.6139 --cl 4.97 --rho 1.2202 || exit /b 1
+set "OPTRL=%ROOT%cache\sepang\opt_raceline.json"
+set "T1RL=%ROOT%cache\sepang	1_h60.json"
+"%PYTHON%" "%ROOT%sim_2026_lap.py" --outline "%OUTLINE%" --raceline-out "%OPTRL%" --csv-out "%CSV%" --reference-csv NONE --inset 0.5 --cda 0.6139 --cl 4.97 --rho 1.2202 || exit /b 1
+echo === Stage 2b: T1 late apex onto the kerb (FITTED line edit), re-simulate on that line ===
+"%PYTHON%" "%ROOT%cache\_sepang_t1_apex.py" --src "%OPTRL%" --half 60 --out "%T1RL%" || exit /b 1
+"%PYTHON%" "%ROOT%sim_2026_lap.py" --outline "%OUTLINE%" --raceline-in "%T1RL%" --raceline-out "%RACELINE%" --csv-out "%CSV%" --reference-csv NONE --inset 0.5 --cda 0.6139 --cl 4.97 --rho 1.2202 || exit /b 1
 echo === Stage 3: gate (t_ref = 2017 pole 90.076; no 2025 lap exists) ===
 "%PYTHON%" "%ROOT%cache\_gate_2026.py" "%CSV%" 90.076
 "%PYTHON%" "%ROOT%cache\_check_ontrack.py" "%OUTLINE%" "%RACELINE%" sepang

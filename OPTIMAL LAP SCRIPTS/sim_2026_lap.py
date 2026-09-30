@@ -1651,6 +1651,23 @@ def _apply_car_overrides(args):
     g["WARM_RHO"] = float(args.rho)
 
 
+def _arc_kappa_closed(raceline):
+    """arc, signed 3-point κ and length of a closed raceline - the same final-κ
+    formula build_raceline applies, for a raceline supplied via --raceline-in."""
+    seg = np.linalg.norm(np.diff(np.vstack([raceline, raceline[0]]), axis=0), axis=1)
+    arc = np.concatenate([[0.0], np.cumsum(seg)])[:-1]
+    kappa = np.zeros(len(raceline))
+    for i in range(len(raceline)):
+        a = raceline[(i - 1) % len(raceline)]
+        b = raceline[i]
+        c = raceline[(i + 1) % len(raceline)]
+        ab = b - a; bc = c - b
+        cross = ab[0] * bc[1] - ab[1] * bc[0]
+        denom = np.linalg.norm(ab) * np.linalg.norm(bc) * np.linalg.norm(c - a)
+        kappa[i] = 0.0 if denom < 1e-9 else 2.0 * cross / denom
+    return arc, kappa, float(seg.sum())
+
+
 def main():
     # Status lines contain Unicode (α, ×, κ); force UTF-8 stdout so they
     # don't crash on Windows' default cp1252 console codec.
@@ -1681,6 +1698,11 @@ def main():
     ap.add_argument("--cda", type=float, default=CDA_STRAIGHT_M2,
                     help="X-mode straight-line CdA [m^2] (wing level; "
                          f"default {CDA_STRAIGHT_M2})")
+    ap.add_argument("--raceline-in", default=None,
+                    help="Opt-in: simulate THIS raceline json (raceline [[x,y]], already "
+                         "S/F-aligned) instead of optimising one from the outline. Used for "
+                         "per-track FITTED line edits (e.g. cache/_sepang_t1_apex.py). "
+                         "Omitted = the normal optimiser path, unchanged.")
     ap.add_argument("--cl", type=float, default=CL_CORNER_M2,
                     help="Z-mode corner ClA [m^2] (downforce level; "
                          f"default {CL_CORNER_M2})")
@@ -1695,7 +1717,14 @@ def main():
     inner_raw = np.array(data["inner"], dtype=float)
     print(f"[sim] outline loaded: outer={len(outer_raw)} inner={len(inner_raw)}")
 
-    raceline, arc, kappa, total_len = build_raceline(outer_raw, inner_raw, inset_m=args.inset)
+    if args.raceline_in:
+        with open(args.raceline_in, encoding="utf-8") as f:
+            raceline = np.asarray(json.load(f)["raceline"], dtype=float)[:, :2]
+        arc, kappa, total_len = _arc_kappa_closed(raceline)
+        print(f"[sim] raceline supplied ({args.raceline_in}); optimiser and S/F "
+              f"anchoring skipped - the file is already S/F-aligned")
+    else:
+        raceline, arc, kappa, total_len = build_raceline(outer_raw, inner_raw, inset_m=args.inset)
     print(f"[sim] raceline: {len(raceline)} pts, {total_len:.0f} m, "
           f"|κ|max={np.abs(kappa).max():.4f}")
 
@@ -1704,7 +1733,9 @@ def main():
     # Anchor the lap origin to the real start/finish line. svg_to_outline put
     # index 0 at the longest-straight proxy (mid-Casino-Straight); roll the
     # raceline so index 0 is the real S/F, then arc/κ/CSV/video all start there.
-    if os.path.exists(args.reference_csv):
+    if args.raceline_in:
+        pass
+    elif os.path.exists(args.reference_csv):
         sf_idx = locate_start_finish(raceline, kappa, args.reference_csv)
         if sf_idx:
             raceline = np.roll(raceline, -sf_idx, axis=0)
