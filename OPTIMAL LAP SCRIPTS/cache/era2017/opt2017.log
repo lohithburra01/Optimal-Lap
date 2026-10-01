@@ -1,0 +1,18 @@
+[opt] 2736 stations, 228 knots, corridor width median 15.0 m
+[opt] base raw lap 89.402s
+[opt] step 1.0 sweep 0: 89.272s (-0.131) accepted 17 t 22s
+[opt] step 1.0 sweep 1: 88.799s (-0.603) accepted 15 t 29s
+[opt] step 1.0 sweep 2: 88.594s (-0.808) accepted 10 t 37s
+[opt] step 1.0 sweep 3: 88.587s (-0.815) accepted 3 t 44s
+[opt] step 1.0 sweep 4: 88.586s (-0.817) accepted 3 t 51s
+[opt] step 1.0 sweep 5: 88.584s (-0.818) accepted 2 t 59s
+[opt] step 1.0 sweep 6: 88.583s (-0.819) accepted 2 t 66s
+[opt] step 1.0 sweep 7: 88.583s (-0.820) accepted 2 t 74s
+[opt] step 1.0 sweep 8: 88.582s (-0.820) accepted 1 t 81s
+[opt] step 1.0 sweep 9: 88.582s (-0.821) accepted 2 t 88s
+[opt] step 1.0 sweep 10: 88.581s (-0.822) accepted 1 t 94s
+[opt] step 1.0 sweep 11: 88.580s (-0.822) accepted 1 t 101s
+[opt] step 1.0 sweep 12: 88.580s (-0.823) accepted 1 t 107s
+[opt] step 1.0 sweep 13: 88.579s (-0.823) accepted 1 t 113s
+[opt] step 1.0 sweep 14: 88.579s (-0.824) accepted 1 t 120s
+[opt] step 0.5 sweep 0: 88.325s (-1.078) accepted 26 t 171s

@@ -1,0 +1,30 @@
+[basin] 15 corners at [538, 688, 950, 1450, 1680, 1832, 2040, 2446, 3002, 3152, 3332, 3732, 3888, 4040, 4966]
+[basin] start lap 87.269s
+[basin] corner @   538 m (R, R=25 m): current 87.257  inside 87.434  outside 87.416  -> current  t 57s
+[basin] corner @   688 m (L, R=33 m): current 87.257  inside 87.646  outside 88.010  -> current  t 86s
+[basin] corner @   950 m (R, R=112 m): current 87.257  inside 87.258  outside 87.615  -> current  t 116s
+[basin] corner @  1450 m (R, R=46 m): current 87.257  inside 88.297  outside 87.426  -> current  t 153s
+[basin] corner @  1680 m (L, R=130 m): current 87.257  inside 87.245  outside 87.408  -> inside  t 202s
+[basin] corner @  1832 m (L, R=103 m): current 87.245  inside 87.259  outside 87.770  -> current  t 224s
+[basin] corner @  2040 m (R, R=95 m): current 87.245  inside 88.773  outside 88.190  -> current  t 247s
+[basin] corner @  2446 m (R, R=76 m): current 87.245  inside 87.706  outside 87.776  -> current  t 282s
+[basin] corner @  3002 m (L, R=25 m): current 87.245  inside 87.399  outside 87.231  -> outside  t 321s
+[basin] corner @  3152 m (R, R=101 m): current 87.231  inside 87.552  outside 87.918  -> current  t 356s
+[basin] corner @  3332 m (R, R=66 m): current 87.231  inside 87.770  outside 87.296  -> current  t 389s
+[basin] corner @  3732 m (L, R=103 m): current 87.231  inside 87.686  outside 88.522  -> current  t 417s
+[basin] corner @  3888 m (R, R=185 m): current 87.231  inside 88.042  outside 88.430  -> current  t 440s
+[basin] corner @  4040 m (R, R=47 m): current 87.231  inside 87.554  outside 87.533  -> current  t 463s
+[basin] corner @  4967 m (L, R=31 m): current 87.231  inside 87.472  outside 87.268  -> current  t 501s
+[calibrate] overrides applied from D:\f1_hot_lap\OPTIMAL LAP SCRIPTS\F1_Pipeline_Assets\calibration\vehicle_calibration.json
+[calibrate] overrides applied from D:\f1_hot_lap\OPTIMAL LAP SCRIPTS\F1_Pipeline_Assets\calibration\vehicle_calibration.json
+[calibrate] overrides applied from D:\f1_hot_lap\OPTIMAL LAP SCRIPTS\F1_Pipeline_Assets\calibration\vehicle_calibration.json
+[calibrate] overrides applied from D:\f1_hot_lap\OPTIMAL LAP SCRIPTS\F1_Pipeline_Assets\calibration\vehicle_calibration.json
+[calibrate] overrides applied from D:\f1_hot_lap\OPTIMAL LAP SCRIPTS\F1_Pipeline_Assets\calibration\vehicle_calibration.json
+[calibrate] overrides applied from D:\f1_hot_lap\OPTIMAL LAP SCRIPTS\F1_Pipeline_Assets\calibration\vehicle_calibration.json
+[calibrate] overrides applied from D:\f1_hot_lap\OPTIMAL LAP SCRIPTS\F1_Pipeline_Assets\calibration\vehicle_calibration.json
+[calibrate] overrides applied from D:\f1_hot_lap\OPTIMAL LAP SCRIPTS\F1_Pipeline_Assets\calibration\vehicle_calibration.json
+[calibrate] overrides applied from D:\f1_hot_lap\OPTIMAL LAP SCRIPTS\F1_Pipeline_Assets\calibration\vehicle_calibration.json
+[calibrate] overrides applied from D:\f1_hot_lap\OPTIMAL LAP SCRIPTS\F1_Pipeline_Assets\calibration\vehicle_calibration.json
+[calibrate] overrides applied from D:\f1_hot_lap\OPTIMAL LAP SCRIPTS\F1_Pipeline_Assets\calibration\vehicle_calibration.json
+[calibrate] overrides applied from D:\f1_hot_lap\OPTIMAL LAP SCRIPTS\F1_Pipeline_Assets\calibration\vehicle_calibration.json
+[basin] done: 87.269 -> 87.231s raw, viol 0.000

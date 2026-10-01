@@ -1,0 +1,12 @@
+[telemetry] 2703 samples, lap_time=90.043s, v=[81,322] km/h, soc=yes, mode=yes
+[telemetry] 2754 samples, lap_time=91.739s, v=[83,327] km/h, soc=yes, mode=yes
+  frame 300/2813
+  frame 600/2813
+  frame 900/2813
+  frame 1200/2813
+  frame 1500/2813
+  frame 1800/2813
+  frame 2100/2813
+  frame 2400/2813
+  frame 2700/2813
+[dual-v3] saved -> sepang_2017_vs_2026_v3.mp4  (2813 frames)

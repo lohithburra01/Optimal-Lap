@@ -14,6 +14,37 @@
   median 30.5 > fixed 28 cap, justified by sim/real ratio 1.44 inside shipped 1.26-1.52. Full record:
   cache/bahrain_2026.md. New tools: cache/_corner_compare.py (SVG/geometry per-corner test),
   cache/_outline_local_smooth.py (one-corner road rebuild; tested, not used for Bahrain).
+- SEPANG 2017 vs 2026 DUAL VIDEO (2026-10-01): sepang_2017_vs_2026.mp4 (make_sepang_2017_vs_2026.bat).
+  2017 car recreated on the same engine (cache/era2017/: sim_2017_car.py imports sim_2026_lap, edits nothing).
+  No 2017 telemetry exists (F1 archive starts 2018); car fitted to REAL 2018 Q telemetry on 6 tracks
+  (_calibrate_2017_v2.py -> car_2017_fit_v2.json; fit plot fit_v2.png; corr 0.95-0.98, top+lap exact).
+  Sepang untrimmed 1:29.23 (=2018 car), CL -5.6% -> 1:30.076 (HAM 2017 pole). Physics picks the SAME T1
+  line for the 2017 car; onboard-style early-inside variants +0.2..0.4 s slower. 2026 files untouched.
+- 2017 MIN-TIME LINE (2026-10-01, resumed after crash): cache/era2017/_opt_line_2017.py (+ --init-knots resume
+  flag) -> opt2017_rl.json, log opt2017_resume.log, plot lines_2017_vs_2026.png. 2017 car 90.076 -> 87.933 s.
+  BUT the 2026 car on the same line: 91.772 -> 89.421 s (-2.35 s), so the gain is NOT 2017-specific; it is the
+  min-curvature-vs-min-time gap (or the optimiser exploiting the engine). All knobs were calibrated on min-curvature
+  lines, so the line is NOT shipped and the dual video is unchanged. Decide at Sepang FP1 / via full backtest.
+- 2017 LINE ON THE REAL ROAD (DONE 2026-10-01): sepang_2017_vs_2026_realroad.mp4 (make_sepang_2017_vs_2026_realroad.bat).
+  User: T1 wrong - HAM 2017 pole attacks the INSIDE straight off the main straight (user approved the magenta T1 line).
+  Road: SVG outline was 2-5 m off the real tarmac; rebuilt from Esri z19 satellite (cache/era2017/_sat_*.py,
+  sepang_sat_outline.json, review crops sat/clean_*.png, true scale 1.0074). Root cause of wrong T1: the one-knot
+  pattern-search optimiser was TRAPPED on the wide line; inside attack is 0.16 s faster with the SAME 2018-fitted car.
+  _corner_basins.py tests inside/outside/current starts at all 15 corners: only T1 changed materially (T4 -0.019, T9 -0.007).
+  2017: untrimmed 1:28.850, cl -8.0% -> 1:30.076 (sepang_2017_sat_*). g-g exponent option gg_p added to sim_2017_car
+  (default 2 = unchanged, verified bit-identical) - not used.
+  2026 on real road: builder line 1:32.001 (shipped old-road lap 1:31.772 untouched); inside T1 for 2026 = +0.10 s, rejected.
+  NOTE: launching two ProcessPool optimisers at once in the background hangs them (workers die) - run sequentially.
+- SEPANG 2017 vs 2026 v2 (CURRENT, 2026-10-01): sepang_2017_vs_2026_v2.mp4 (make_sepang_2017_vs_2026_v2.bat).
+  User REJECTED the satellite road ("track looks very bad", edges bad) -> back to the SVG outline. Satellite work kept but unused.
+  2026 = shipped 1:31.772 unchanged. 2017 = car UNCHANGED (cl 4.037) on min-time line, T1 inside, anti-zigzag
+  (--smooth-w 0.006) -> 1:27.727; user chose "keep car" over re-trimming (would need cl -17%).
+  Caveat told to user: car was calibrated on builder lines, so a min-time line is ~2.2 s faster than the real pole.
+  Video style (user): --no-graph --white-text (all text white; DEPLOY/BRAKING/SUPERCLIP own colours, DRS green).
+- SEPANG 2017 vs 2026 v3 (LATEST, 2026-10-01): sepang_2017_vs_2026_v3.mp4 (make_sepang_2017_vs_2026_v3.bat,
+  renderer cache/era2017/dual_lap_video_v3.py). User spec: fixed zoom 19 following the 2026 car (no dynamic zoom - smooth
+  motion = retention), speed-heatmap trail/dot (2017 dulled), trailing car on top at 70% opacity, minimap under the cars,
+  lap times not stopwatch, 2017 = HAM 1:30.076 (min-time line, cl -18.1%).
 - NEXT: Sepang FP1 (Fri 2026-10-02) verification: fetch --country Bahrain --circuit "Kuala Lumpur".
   Deferred: line optimiser is min-curvature not min-time at hairpin combos (Sepang T1) - engine-wide fix
   needs the full backtest.
