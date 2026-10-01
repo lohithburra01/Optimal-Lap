@@ -1,0 +1,65 @@
+{
+ "track": "bahrain",
+ "rho": 1.2242,
+ "t25_s": 90.119,
+ "lap_band_s": [
+  90.84,
+  95.143
+ ],
+ "vtop_target_kmh": 317.4,
+ "corners": [
+  {
+   "s_m": 712.7,
+   "s_frac": 0.13226,
+   "v25_kmh": 67.0,
+   "v26_target_kmh": 64.8
+  },
+  {
+   "s_m": 1507.2,
+   "s_frac": 0.2797,
+   "v25_kmh": 123.0,
+   "v26_target_kmh": 116.8
+  },
+  {
+   "s_m": 1861.8,
+   "s_frac": 0.34551,
+   "v25_kmh": 209.0,
+   "v26_target_kmh": 193.6
+  },
+  {
+   "s_m": 2221.1,
+   "s_frac": 0.41217,
+   "v25_kmh": 79.0,
+   "v26_target_kmh": 76.4
+  },
+  {
+   "s_m": 2686.6,
+   "s_frac": 0.49857,
+   "v25_kmh": 76.0,
+   "v26_target_kmh": 73.5
+  },
+  {
+   "s_m": 3420.6,
+   "s_frac": 0.63477,
+   "v25_kmh": 161.0,
+   "v26_target_kmh": 150.9
+  },
+  {
+   "s_m": 4066.8,
+   "s_frac": 0.7547,
+   "v25_kmh": 141.0,
+   "v26_target_kmh": 132.9
+  },
+  {
+   "s_m": 4870.9,
+   "s_frac": 0.9039,
+   "v25_kmh": 126.0,
+   "v26_target_kmh": 119.5
+  }
+ ],
+ "cda0": 0.75,
+ "cl0": 4.6,
+ "ref_used": "2025_q",
+ "transfer": "transfer_2026.json",
+ "warnings": []
+}

@@ -116,6 +116,24 @@ TRACKS: dict[str, dict] = {
         # OpenF1 z-channel after cache/_fetch_elevation.py, as Zandvoort did.
         altitude_m=162.0, length_m=5793.0,
     ),
+    "bahrain": dict(
+        outline=_p("F1_Pipeline_Assets/tracks/bahrain_grand_prix_outline.json"),
+        # 2025 Q, PIA 1:29.841 (the real pole), 5389 m integrated vs 5412 (-0.4%),
+        # fetched 2026-10-01 - long after the 2025-04-12 session.
+        csv25=_p("F1_Pipeline_Assets/exports/reference_2025_bahrain_q.csv"),
+        csv26=None,
+        kind26=None, country="Bahrain",
+        # 2026's "Bahrain GP" meeting is held at Sepang (circuit "Kuala Lumpur"):
+        # every 2026 lookup MUST filter on this or it picks the Sepang weekend.
+        circuit="Sakhir",
+        # placeholder ASL; re-pin from the measured OpenF1 z-channel.
+        altitude_m=7.0, length_m=5412.0,
+        # SVG Bahrain_International_Circuit--Grand_Prix_Layout_with_DRS.svg @ 15 m, min R 9.
+        # Its T10 is drawn as a sharp V; inset 1.2 is the smallest that keeps the line
+        # on-track there (0/2682, worst 0.29 m) and gave the best corner fit of all
+        # candidates (worst corner 12 km/h vs r(v25) targets, corr 0.975).
+        inset=1.2,
+    ),
 }
 
 

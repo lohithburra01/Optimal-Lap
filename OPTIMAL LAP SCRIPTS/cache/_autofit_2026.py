@@ -52,7 +52,8 @@ def run_sim(slug: str, spec: dict, cda: float, cl: float, rho: float,
            "--raceline-out", rl_out,
            "--csv-out", csv_out,
            "--reference-csv", spec["csv25"],   # 2025 anchor: pre-FP1 conditions
-           "--inset", "0",
+           # per-track corridor inset (registry "inset"; absent = 0 as before)
+           "--inset", f"{spec.get('inset', 0)}",
            "--cda", f"{cda:.4f}", "--cl", f"{cl:.4f}", "--rho", f"{rho:.4f}"]
     r = subprocess.run(cmd, capture_output=True, text=True, cwd=REPO_ROOT)
     if r.returncode != 0:

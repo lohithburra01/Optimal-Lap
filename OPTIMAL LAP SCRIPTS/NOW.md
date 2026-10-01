@@ -6,8 +6,17 @@
 - THIS WEEK: "Bahrain GP" is held at SEPANG (OpenF1: country Bahrain, circuit "Kuala Lumpur", FP1 2026-10-02).
   Sepang shipped pre-FP1 via the NO-REFERENCE method: see cache/sepang_2026_noref.md + make_sepang_2026_lap.bat.
   Video malaysian_grand_prix_2026_optimal_lap.mp4, lap 1:31.772 (T1 late-apex FITTED edit), zoom 18 (user: 0.6x of 30), no elevation (user OK).
-  Next: Sepang FP1 verification (+elevation, S/F re-pin), then Bahrain (Sakhir) video via the normal
-  pre-FP1 pipeline (2025 Q ref exists; 2026 pre-season testing was also at Sakhir).
+  Sepang T1: late apex pulled onto the kerb (cache/_sepang_t1_apex.py, sim --raceline-in), 1:31.772.
+  User tested "earlier inside" vs 2017 onboard; physics says +0.28..0.50 s slower -> KEEP current line.
+- BAHRAIN (Sakhir) SHIPPED 2026-10-01: bahrain_grand_prix_2026_optimal_lap.mp4, lap 1:32.186 (+2.34 s vs
+  2025 pole), zoom 18 + 3D elevation flyover (2025 Q z, span 16.4 m). make_bahrain_2026_lap.bat reproduces it.
+  SVG = ..._Grand_Prix_Layout_with_DRS.svg; registry inset 1.2 (T10 drawn as a sharp V). Gate 8/9: GAIN
+  median 30.5 > fixed 28 cap, justified by sim/real ratio 1.44 inside shipped 1.26-1.52. Full record:
+  cache/bahrain_2026.md. New tools: cache/_corner_compare.py (SVG/geometry per-corner test),
+  cache/_outline_local_smooth.py (one-corner road rebuild; tested, not used for Bahrain).
+- NEXT: Sepang FP1 (Fri 2026-10-02) verification: fetch --country Bahrain --circuit "Kuala Lumpur".
+  Deferred: line optimiser is min-curvature not min-time at hairpin combos (Sepang T1) - engine-wide fix
+  needs the full backtest.
 
 # NOW.md — operating manual for the pre-FP1 2026 optimal-lap pipeline
 (last update 2026-08-20: Zandvoort shipped pre-FP1 + banking capability. Read fully before touching anything.)
