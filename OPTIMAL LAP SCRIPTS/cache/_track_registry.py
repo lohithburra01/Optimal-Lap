@@ -134,6 +134,22 @@ TRACKS: dict[str, dict] = {
         # candidates (worst corner 12 km/h vs r(v25) targets, corr 0.975).
         inset=1.2,
     ),
+    "singapore": dict(
+        # MIRRORED outline (x -> -x): Marina Bay runs anticlockwise, the engine drives CW.
+        # Sim on the mirror, un-mirror the raceline for the video (cache/_singapore_prep.py).
+        outline=_p("F1_Pipeline_Assets/tracks/singapore_grand_prix_mirror_outline.json"),
+        # 2025 Q, RUS 1:29.158 (the real pole), 4888 m integrated vs 4940 (-1.1%),
+        # fetched 2026-10-08 - long after the 2025-10-04 session.
+        csv25=_p("F1_Pipeline_Assets/exports/reference_2025_singapore_q.csv"),
+        csv26=None,
+        kind26=None, country="Singapore", circuit="Singapore",
+        altitude_m=15.0, length_m=4927.0,
+        # v4 (2026-10-08): OFFICIAL map-matched path (top-10 2025 Q laps) @ FIA 4927 m, 10 m wide,
+        # min R 10, S/F = official timing line (cache/singapore/_build_official_outline.py); the SVG
+        # Marina_Bay_circuit_2023.svg only fixes the frame. Street grip 0.723 via env SG_MECH.
+        # Street circuit (walls): inset 1.0 = the sim's wall-safe default (0 put the line 0.55 m over an edge).
+        inset=1.0,
+    ),
 }
 
 
