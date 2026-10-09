@@ -1,4 +1,15 @@
 # >>> CURRENT STATE (2026-09-30) - read this block first <<<
+- PATTERN STUDY (2026-10-09): cache/hypo/README.md. 12 real 2025/2026 Q pairs -> universal patterns (energy
+  clipping shape on straights, corner ratios, braking). HYBRID predictor (2025 pole x median growth +3.5%, ratio-field
+  shape) beats our physics laps: LOO lap |err| 0.44 vs 1.31 s, trace RMSE 11.8 vs 21.4 km/h. Singapore prediction
+  1:32.27 (p10-p90 1:30.85-1:33.01); FP1 trace within +-0.4 s of it. Next: use the hybrid as the weekend predictor
+  (Austin, Mexico, Interlagos, Vegas, Lusail, Abu Dhabi all have 2025 Q data); retime videos to it.
+- SINGAPORE v4 (2026-10-08, CURRENT): official-geometry track (map-matched path, FIA 4927 m, 10 m wide), street
+  grip 0.723 (mechanical, measured on a 2025 car vs RUS real; env SG_MECH), apex line + T8-T9 wide entry (both cars) -> 2026 lap 1:33.01, gate 9/9, zoom 28.
+  Dual video singapore_2025_vs_2026.mp4: RUS REAL telemetry on the official clock (sectors exact) on his 2025-car line.
+  Batches: make_singapore_2026_lap.bat, make_singapore_2025_vs_2026.bat. Record: cache/singapore_2026.md (v1..v4).
+  CCW track: sim on x-mirror (cache/_singapore_prep.py). v3 (SVG) backup: cache/singapore/v3_backup.
+  OPEN: 2026 car loses 76% of its deficit under braking (real 11-27%) -> engine-wide braking/superclip task.
 - The Baku 2026 work (09-24/25) was done by a GPT agent and is REJECTED by the user. Never use it.
   Its engine edits are quarantined in _quarantine_gpt_baku_2026-09-25/ (copies; never delete anything).
 - Engine restored to committed HEAD + banking physics; proven bit-identical on Zandvoort.
