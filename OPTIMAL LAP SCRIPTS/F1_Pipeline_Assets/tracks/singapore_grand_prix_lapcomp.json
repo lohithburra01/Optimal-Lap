@@ -1,0 +1,18 @@
+{
+  "track_name": "Singapore Grand Prix",
+  "outline": "F1_Pipeline_Assets/tracks/singapore_grand_prix_outline.json",
+  "raceline": "F1_Pipeline_Assets/tracks/singapore_grand_prix_raceline.json",
+  "zoom": 28,
+  "note": "v4b line = make_singapore_2026_lap.bat k3w step; CCW track optimised on the x-mirror",
+  "optimiser": {
+    "script": "cache/singapore/_opt_line_2026_sg.py",
+    "env": {"SG_MECH": "0.7230"},
+    "mirror": true,
+    "cda": 0.559, "cl": 4.363, "margin": 0.3,
+    "args": ["--base", "cache/singapore/base_k_rl.json",
+             "--outline", "F1_Pipeline_Assets/tracks/singapore_grand_prix_mirror_outline.json",
+             "--rho", "1.2232", "--apex-w", "1.5", "--steps", "1,0.5,0.25",
+             "--init-knots", "cache/singapore/k3w_knots.npy", "--apex-knots", "cache/singapore/zero_k.npy",
+             "--touch", "2060,2120,1980"]
+  }
+}
