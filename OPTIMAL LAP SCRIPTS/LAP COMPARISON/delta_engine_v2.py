@@ -1,4 +1,5 @@
-"""HI-FI DELTA v2 engine - copied VERBATIM from the user's notebook
+"""DO NOT USE - superseded by hifi_delta_v2.py (the user's actual v2). Kept only because nothing is ever deleted.
+HI-FI DELTA v2 engine - copied VERBATIM from the user's notebook
 (Downloads/formulytics scripts.ipynb, last cell, "HI-FI DELTA v2"). Do not edit the engine code below;
 only the adapter at the bottom (calculate_delta) is ours: it feeds lap-comparison traces in and returns the
 delta on the reference distance axis, the same shape the old calculate_hifi_delta returned.

@@ -1,4 +1,4 @@
-"""Delta graph from the delta engine (v2 = HI-FI DELTA v2 by default, --delta-engine v1 = original): P2's time to P1 along the lap.
+"""Delta graph from the delta engine (v2 = HI-FI DELTA v2, hifi_delta_v2.py, by default; --delta-engine v1 = original): P2's time to P1 along the lap.
   python delta_graph.py --track "Singapore Grand Prix" --year 2026 --session Q --drivers VER,LEC
 + = P2 behind P1 (red), - = P2 ahead (green): same convention as the video's METERS line."""
 import argparse, os, sys

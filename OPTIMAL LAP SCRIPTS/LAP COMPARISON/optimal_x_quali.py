@@ -7,7 +7,7 @@ Edit the SETTINGS block below (or pass the same things on the command line) and 
     python optimal_x_quali.py --track "Singapore" --drivers "VER 2026 SQ,RUS 2025 Q"     (cross-session)
 
 No dropdowns, no driver database: the track is any name FastF1 understands, the drivers are TOP2 (fastest two
-of the session) or any two codes you type. Timing = HI-FI DELTA v2 (delta_engine_v2.py, verbatim from the notebook); --delta-engine v1 = original LAPCOMP engine.
+of the session) or any two codes you type. Timing = HI-FI DELTA v2 (hifi_delta_v2.py, the user's engine, verbatim); --delta-engine v1 = original LAPCOMP engine.
 Road + lines = the optimal-lap run for the track (F1_Pipeline_Assets/tracks/<track>_lapcomp.json, optimal_lines.py).
 The faster lap is P1/reference. Each driver gets his own optimiser line (character_lines.per_driver_lines: same
 optimiser as the optimal lap, CdA/CL/margin changed very slightly, cornering car from the data). First run per
@@ -24,7 +24,7 @@ ZOOM = 40.0
 TRAIL_FRAMES = 60
 FPS = 30
 OUT = None                       # None = auto name in this folder
-DELTA_ENGINE = "v2"              # "v2" = HI-FI DELTA v2 (delta_engine_v2.py), "v1" = original LAPCOMP engine
+DELTA_ENGINE = "v2"              # "v2" = HI-FI DELTA v2 (hifi_delta_v2.py), "v1" = original LAPCOMP engine
 # ==========================================================================================
 
 import argparse, colorsys, math, os, subprocess, sys, json
@@ -140,8 +140,15 @@ def shifted_heat(t, deg):
 def delta_fn(engine):
     if engine == "v1":
         return LCO.calculate_hifi_delta
-    import delta_engine_v2
-    return delta_engine_v2.calculate_delta
+    import hifi_delta_v2 as H          # the user's v2 core (NOT the older notebook cell in delta_engine_v2.py)
+
+    def v2(ref_trace, tgt_trace):
+        """Our traces carry speed in m/s; the engine wants km/h. Delta returned on ref_trace['dist']."""
+        conv = lambda tr: {'dist': tr['dist'], 'speed': np.asarray(tr['speed'], float) * 3.6,
+                           'lap_time': float(tr['lap_time']), 'gates': tr.get('gates', {})}
+        grid, delta, _, _ = H.calculate_hifi_delta(conv(ref_trace), conv(tgt_trace))
+        return ref_trace['dist'], np.interp(np.asarray(ref_trace['dist'], float), grid, delta)
+    return v2
 
 
 def render(traces, outline_path, line_paths, out_path, title1, title2, zoom=30.0, trail_frames=60, fps=30,
