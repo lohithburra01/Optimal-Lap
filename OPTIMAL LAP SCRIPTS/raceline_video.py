@@ -119,6 +119,7 @@ MODE_COLORS = {
     "DEPLOY":    (60, 220, 100),
     "SUPERCLIP": (255, 140, 0),
     "REGEN":     (255, 230, 0),
+    "BRAKING":   (255, 80, 60),     # non-hybrid cars (GT3): braking zones
 }
 
 # 3D elevation flyover (only when --elevation-json is given): the elevation-
@@ -1142,6 +1143,8 @@ def main():
     ap.add_argument("--display-laptime", type=float, default=None,
                     help="Override the LAP TIME label (seconds); animation timing "
                          "is unchanged. Use to show a realistic 2026 lap time.")
+    ap.add_argument("--elev-scale", type=float, default=1.0,
+                    help="Size multiplier for the 3D elevation flyover (scales EL3D_FOCAL; 1.0 = unchanged)")
     ap.add_argument("--elevation-json", default=None,
                     help="Elevation data from cache/_fetch_elevation.py (needs "
                          "'stations'). Adds the 3D elevation flyover in the "
@@ -1149,6 +1152,8 @@ def main():
                          "the car, solid extrusion walls, no background. "
                          "Omit = no flyover.")
     args = ap.parse_args()
+    global EL3D_FOCAL
+    EL3D_FOCAL *= args.elev_scale
 
     elev = None
     if args.elevation_json:
