@@ -1,0 +1,10 @@
+[reshape] it 0: speed RMSE 15.84 km/h  lap 107.251  curvature rms err 2.69 1/km  corr 0.960
+[reshape] it 1: speed RMSE 10.84 km/h  lap 104.279  curvature rms err 2.40 1/km  corr 0.968
+[reshape] it 2: speed RMSE 9.59 km/h  lap 103.769  curvature rms err 3.29 1/km  corr 0.939
+[reshape] it 3: speed RMSE 9.30 km/h  lap 103.012  curvature rms err 2.74 1/km  corr 0.960
+[reshape] it 4: speed RMSE 7.65 km/h  lap 102.737  curvature rms err 2.81 1/km  corr 0.958
+[reshape] it 5: speed RMSE 9.46 km/h  lap 102.087  curvature rms err 2.82 1/km  corr 0.957
+[reshape] it 6: speed RMSE 9.98 km/h  lap 103.377  curvature rms err 3.16 1/km  corr 0.946
+[reshape] it 7: speed RMSE 9.04 km/h  lap 103.026  curvature rms err 2.78 1/km  corr 0.957
+[reshape] it 8: speed RMSE 7.75 km/h  lap 103.157  curvature rms err 2.35 1/km  corr 0.971
+[reshape] best it 4  RMSE 7.65 -> portimao_gt3real_outline.json + reshaped_rl.json
