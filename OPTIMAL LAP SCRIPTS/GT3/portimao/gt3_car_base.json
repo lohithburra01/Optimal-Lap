@@ -1,0 +1,17 @@
+{
+ "mass": 1420.0,
+ "p_kw": 365.0,
+ "cda": 0.85,
+ "cl": 2.5289,
+ "drs_frac": 0.0,
+ "rho": 1.2,
+ "mu_lat": 1.7,
+ "mu_long": 1.7,
+ "mu_drive": 1.2,
+ "acc_g": 0.95,
+ "trail_v": 200.0,
+ "trail_min": 0.6,
+ "trail_exp": 1.2,
+ "gg_p": 2.0,
+ "target_s": 100.051
+}
