@@ -1,6 +1,6 @@
 """Lap comparison on the OPTIMAL-LAP track.
 
-Timing = LAPCOMP.IPYNB, untouched: calculate_hifi_delta() is copied verbatim and the time mapping
+Timing = hifi_delta_v2.py (exact F1InsightsHub delta port) via calculate_hifi_delta(); the time mapping
 (ref time + delta, np.maximum.accumulate, np.interp(t, time, ref_dist)) is the notebook's bake() loop.
 Only the picture changes: the road is the optimal-lap road (outline + kerbs + white edges, drawn with
 raceline_video.py's own helpers) and every car rides ITS OWN optimiser racing line, placed at the same lap
@@ -15,63 +15,24 @@ import numpy as np
 import cv2
 from PIL import Image, ImageDraw, ImageFont
 from scipy.interpolate import interp1d
-from scipy.signal import correlate, medfilt
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import raceline_video as RV   # road drawing helpers only (imported, never edited)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import hifi_delta_v2 as H
 
 
 # ==========================================
-# 1. HIGH-FIDELITY DELTA ENGINE (PURE MATH)  -- verbatim from LAPCOMP.IPYNB
+# 1. DELTA ENGINE -- hifi_delta_v2.py (exact F1InsightsHub port, fed from FastF1 car data)
 # ==========================================
 def calculate_hifi_delta(ref_trace, tgt_trace):
-    master_len = ref_trace['dist'].max()
-    scale = master_len / tgt_trace['dist'].max()
-    tgt_dist_scaled = tgt_trace['dist'] * scale
-
-    grid_len = 10000; window_size = 300; step_size = 50
-    common_grid = np.linspace(0, master_len, grid_len)
-    v_ref = np.interp(common_grid, ref_trace['dist'], ref_trace['speed'])
-    v_tgt = np.interp(common_grid, tgt_dist_scaled, tgt_trace['speed'])
-
-    shifts, positions = [], []
-    for start_pos in range(0, int(master_len), step_size):
-        end_pos = start_pos + window_size
-        if end_pos > master_len: break
-        i0 = int((start_pos / master_len) * grid_len)
-        i1 = int((end_pos / master_len) * grid_len)
-        corr = correlate(v_ref[i0:i1], v_tgt[i0:i1], mode='same')
-        if len(corr) == 0: continue
-        lag_idx = np.argmax(corr) - (len(corr) // 2)
-        shift_m = lag_idx * (master_len / grid_len)
-        if abs(shift_m) < 40:
-            shifts.append(shift_m); positions.append(start_pos + window_size/2)
-
-    if positions:
-        if positions[0] > 0: positions.insert(0, 0); shifts.insert(0, shifts[0])
-        if positions[-1] < master_len: positions.append(master_len); shifts.append(shifts[-1])
-        positions, shifts = zip(*sorted(zip(positions, shifts)))
-        shift_interp = interp1d(positions, shifts, kind='linear', fill_value="extrapolate")
-        tgt_dist_warped = tgt_dist_scaled + shift_interp(tgt_dist_scaled)
-    else:
-        tgt_dist_warped = tgt_dist_scaled
-
-    f_tgt_time = interp1d(tgt_dist_warped, tgt_trace['time'], fill_value="extrapolate")
-    raw_delta = f_tgt_time(ref_trace['dist']) - ref_trace['time']
-    delta_smooth = medfilt(raw_delta, kernel_size=15)
-    delta_zeroed = delta_smooth - delta_smooth[0]
-
-    actual_lap_diff = tgt_trace['lap_time'] - ref_trace['lap_time']
-    residual_error = delta_zeroed[-1] - actual_lap_diff
-
-    if abs(residual_error) > 1e-6:
-        ramp = np.linspace(0, 1, len(delta_zeroed))
-        final_delta = delta_zeroed - (ramp * residual_error)
-    else:
-        final_delta = delta_zeroed
-
-    return ref_trace['dist'], final_delta
+    """Delta (s, + = target slower) on ref_trace['dist']. Each trace needs 'f1ih' = H.get_trace(session, driver, lap)
+    for the same lap; the engine's distance grid is mapped onto ref_trace['dist'] by lap fraction."""
+    grid, delta = H.calculate_delta(ref_trace['f1ih'], tgt_trace['f1ih'], max_points=None)
+    ok = np.isfinite(delta)
+    d = np.asarray(ref_trace['dist'], float)
+    return ref_trace['dist'], np.interp(d / d[-1], grid[ok] / grid[ok][-1], delta[ok])
 
 
 # ==========================================
@@ -136,6 +97,10 @@ def main():
     traces = [{'dist': Z[d + "_dist"].astype(float), 'speed': Z[d + "_speed"].astype(float),
                'time': Z[d + "_time"].astype(float), 'lap_time': float(Z[d + "_lap_time"]), 'driver': d}
               for d in drivers]
+    import fastf1
+    s = fastf1.get_session(int(a.year), a.track, a.session)
+    s.load(telemetry=True, laps=True, weather=False, messages=False)
+    for tr in traces: tr['f1ih'] = H.get_trace(s, tr['driver'])      # fastest lap, as in the npz
     line_paths = dict(kv.split("=", 1) for kv in a.lines.split(","))
     render(traces, a.outline, line_paths, a.track, a.year, a.session, a.out, a.zoom, a.trail_frames, a.fps, a.max_seconds)
 

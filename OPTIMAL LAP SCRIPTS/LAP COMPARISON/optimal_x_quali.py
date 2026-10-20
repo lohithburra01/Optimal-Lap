@@ -7,7 +7,7 @@ Edit the SETTINGS block below (or pass the same things on the command line) and 
     python optimal_x_quali.py --track "Singapore" --drivers "VER 2026 SQ,RUS 2025 Q"     (cross-session)
 
 No dropdowns, no driver database: the track is any name FastF1 understands, the drivers are TOP2 (fastest two
-of the session) or any two codes you type. Timing = HI-FI DELTA v2 (hifi_delta_v2.py, the user's engine, verbatim); --delta-engine v1 = original LAPCOMP engine.
+of the session) or any two codes you type. Timing = hifi_delta_v2.py (exact F1InsightsHub delta port, FastF1 car data).
 Road + lines = the optimal-lap run for the track (F1_Pipeline_Assets/tracks/<track>_lapcomp.json, optimal_lines.py).
 The faster lap is P1/reference. Each driver gets his own optimiser line (character_lines.per_driver_lines: same
 optimiser as the optimal lap, CdA/CL/margin changed very slightly, cornering car from the data). First run per
@@ -24,7 +24,6 @@ ZOOM = 40.0
 TRAIL_FRAMES = 60
 FPS = 30
 OUT = None                       # None = auto name in this folder
-DELTA_ENGINE = "v2"              # "v2" = HI-FI DELTA v2 (hifi_delta_v2.py), "v1" = original LAPCOMP engine
 # ==========================================================================================
 
 import argparse, colorsys, math, os, subprocess, sys, json
@@ -36,7 +35,7 @@ from scipy.interpolate import interp1d
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-import lap_compare_optimal as LCO          # verbatim delta engine + LineRail
+import lap_compare_optimal as LCO          # delta engine adapter + LineRail
 import optimal_lines as OL                 # road/line recipe + per-driver optimiser lines
 RV = LCO.RV                                # raceline_video.py: road helpers, heatmap colours, fonts, layout
 
@@ -73,7 +72,7 @@ def clean_trace(session, driver):
         gates['S1'] = (float(np.interp(sec[0], t, dist)), sec[0])
         if sec[1] is not None:
             gates['S2'] = (float(np.interp(sec[0] + sec[1], t, dist)), sec[0] + sec[1])
-    return {'dist': dist, 'speed': tel['Speed'].values / 3.6, 'time': t,
+    return {'dist': dist, 'speed': tel['Speed'].values / 3.6, 'time': t, 'f1ih': LCO.H.get_trace(session, driver, lap),
             'lap_time': lap['LapTime'].total_seconds(), 'driver': driver, 'gates': gates}
 
 
@@ -137,22 +136,8 @@ def shifted_heat(t, deg):
 
 
 # ------------------------------------------------------------------ render
-def delta_fn(engine):
-    if engine == "v1":
-        return LCO.calculate_hifi_delta
-    import hifi_delta_v2 as H          # the user's v2 core (NOT the older notebook cell in delta_engine_v2.py)
-
-    def v2(ref_trace, tgt_trace):
-        """Our traces carry speed in m/s; the engine wants km/h. Delta returned on ref_trace['dist']."""
-        conv = lambda tr: {'dist': tr['dist'], 'speed': np.asarray(tr['speed'], float) * 3.6,
-                           'lap_time': float(tr['lap_time']), 'gates': tr.get('gates', {})}
-        grid, delta, _, _ = H.calculate_hifi_delta(conv(ref_trace), conv(tgt_trace))
-        return ref_trace['dist'], np.interp(np.asarray(ref_trace['dist'], float), grid, delta)
-    return v2
-
-
 def render(traces, outline_path, line_paths, out_path, title1, title2, zoom=30.0, trail_frames=60, fps=30,
-           max_seconds=None, still=None, delta_engine=DELTA_ENGINE, log=print):
+           max_seconds=None, still=None, log=print):
     """still = list of frame numbers -> writes <out_path>_f<N>.png mockups instead of a video."""
     ref = traces[0]; uids = [tr['label'] for tr in traces]
     master_len = ref['dist'][-1]
@@ -162,10 +147,10 @@ def render(traces, outline_path, line_paths, out_path, title1, title2, zoom=30.0
         if tr is ref:
             mapped = ref['time']; dfun[tr['label']] = lambda d: 0.0
         else:
-            _, fd = delta_fn(delta_engine)(ref, tr)
+            _, fd = LCO.calculate_hifi_delta(ref, tr)
             mapped = ref['time'] + fd
             dfun[tr['label']] = interp1d(ref['dist'], fd, fill_value="extrapolate")
-            log(f"[delta {delta_engine}] {tr['label']}: final {fd[-1]:+.3f}s")
+            log(f"[delta] {tr['label']}: final {fd[-1]:+.3f}s")
         tmap[tr['label']] = np.maximum.accumulate(mapped)
     total_frames = int(max(t[-1] for t in tmap.values()) * fps)
     if max_seconds: total_frames = min(total_frames, int(max_seconds * fps))
@@ -328,7 +313,6 @@ def main():
     ap.add_argument("--session", default=SESSION); ap.add_argument("--drivers", default=DRIVERS)
     ap.add_argument("--zoom", type=float, default=ZOOM); ap.add_argument("--trail-frames", type=int, default=TRAIL_FRAMES)
     ap.add_argument("--fps", type=int, default=FPS); ap.add_argument("--out", default=OUT)
-    ap.add_argument("--delta-engine", default=DELTA_ENGINE, choices=["v1", "v2"])
     ap.add_argument("--mockup", default=None, help="frame numbers, e.g. 600,2200: PNG stills, no video")
     ap.add_argument("--max-seconds", type=float, default=None, help="preview: render only the first N seconds")
     a = ap.parse_args()
@@ -354,7 +338,7 @@ def main():
                                       f"{traces[0]['label'].split()[0]}_vs_{traces[1]['label'].split()[0]}.mp4")
     render(traces, recipe['outline'], line_paths, out, title1, title2, zoom=a.zoom, trail_frames=a.trail_frames,
            fps=a.fps, max_seconds=a.max_seconds,
-           still=[int(x) for x in a.mockup.split(',')] if a.mockup else None, delta_engine=a.delta_engine)
+           still=[int(x) for x in a.mockup.split(',')] if a.mockup else None)
     if not a.max_seconds and not a.mockup:
         subprocess.run(f'explorer /select,"{out}"', shell=True)
 

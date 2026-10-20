@@ -1,4 +1,4 @@
-"""Delta graph from the delta engine (v2 = HI-FI DELTA v2, hifi_delta_v2.py, by default; --delta-engine v1 = original): P2's time to P1 along the lap.
+"""Delta graph from the delta engine (hifi_delta_v2.py, exact F1InsightsHub port): P2's time to P1 along the lap.
   python delta_graph.py --track "Singapore Grand Prix" --year 2026 --session Q --drivers VER,LEC
 + = P2 behind P1 (red), - = P2 ahead (green): same convention as the video's METERS line."""
 import argparse, os, sys
@@ -18,11 +18,11 @@ def main():
     ap.add_argument("--track", default=Q.TRACK); ap.add_argument("--year", type=int, default=Q.YEAR)
     ap.add_argument("--session", default=Q.SESSION); ap.add_argument("--drivers", default=Q.DRIVERS)
     ap.add_argument("--out", default=None)
-    ap.add_argument("--delta-engine", default=Q.DELTA_ENGINE, choices=["v1", "v2"])
     a = ap.parse_args()
     traces, event, _ = Q.load_traces(a.track, a.year, a.session.upper(), a.drivers)
     ref, tgt = traces
-    dist, delta = Q.delta_fn(a.delta_engine)(ref, tgt)
+    dist, delta = LCO.H.calculate_delta(ref['f1ih'], tgt['f1ih'])     # their 800-point chart series
+    ok = np.isfinite(delta); dist, delta = dist[ok], delta[ok]
     km = dist / 1000.0
 
     for f in ("Formula1-Bold_web_0.ttf.ttf", "Formula1-Regular_web_0.ttf.ttf"):
@@ -67,7 +67,7 @@ def main():
              color=MUTED, fontproperties=reg, fontsize=15)
     fig.text(0.94, 0.03, "@formulytics", color=MUTED, fontproperties=bold, fontsize=13, ha="right")
     fig.subplots_adjust(left=0.08, right=0.97, top=0.84, bottom=0.08)
-    out = a.out or os.path.join(HERE, f"{Q.OL.slug(event) if hasattr(Q, 'OL') else 'delta'}_{a.year}_{a.session.lower()}_{r}_vs_{t}_delta{'' if a.delta_engine == 'v2' else '_v1'}.png")
+    out = a.out or os.path.join(HERE, f"{Q.OL.slug(event) if hasattr(Q, 'OL') else 'delta'}_{a.year}_{a.session.lower()}_{r}_vs_{t}_delta.png")
     fig.savefig(out, facecolor="black"); plt.close(fig)
     print(f"final {delta[-1]:+.3f}s, max {delta.max():+.3f}s @ {km[i_hi]:.2f} km, min {delta.min():+.3f}s @ {km[i_lo]:.2f} km")
     print("->", out)
